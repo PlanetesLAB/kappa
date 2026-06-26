@@ -8,7 +8,7 @@
 #![allow(clippy::inconsistent_struct_constructor)]
 #![allow(clippy::cast_possible_wrap)]
 #![doc(
-    html_logo_url = "https://raw.githubusercontent.com/ProsiaLAB/prosialab.github.io/refs/heads/main/images/prosialab.jpeg"
+    html_logo_url = "https://raw.githubusercontent.com/PlanetesLAB/planeteslab.github.io/refs/heads/main/images/planeteslab.jpeg"
 )]
 //! # Introduction
 //! This tool produces complex dust particle opacities right from the command line. It is
@@ -16,7 +16,7 @@
 //! theory for highly porous aggregates.
 //!
 //! For a brief overview behind the details of the implementation from a theoretical
-//! perspective, read the [book](https://prosialab.github.io/books/kappa).
+//! perspective, read the [book](https://planeteslab.github.io/books/kappa).
 //!
 //! ## Capabilities
 //! - stand-alone tool, fully command line driven, no input files need to be edited
@@ -45,7 +45,7 @@
 //! # Installation
 //! The easiest way to install `kappa` is to first get the source code from GitHub:
 //! ```bash
-//! git clone https://github.com/ProsiaLAB/kappa.git
+//! git clone https://github.com/PlanetesLAB/kappa.git
 //! ```
 //! Then, you can build the executable with `cargo`:
 //! ```bash

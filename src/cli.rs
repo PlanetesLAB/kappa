@@ -7,7 +7,7 @@ use std::process::exit;
 use anyhow::Result;
 use anyhow::anyhow;
 use colored::{Color, Colorize};
-use prosia_extensions::types::RVector;
+use planetes_ext::types::RVector;
 
 use crate::components::MATERIAL_KEYS;
 use crate::io::read_wavelength_grid;

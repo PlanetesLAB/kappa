@@ -4,7 +4,7 @@ use std::io::BufRead;
 
 use anyhow::Result;
 use anyhow::anyhow;
-use prosia_extensions::types::RVector;
+use planetes_ext::types::RVector;
 
 use crate::opac::Component;
 

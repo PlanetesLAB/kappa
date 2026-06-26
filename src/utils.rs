@@ -1,5 +1,5 @@
 use ndarray::Array1;
-use prosia_extensions::types::RVector;
+use planetes_ext::types::RVector;
 
 pub mod constants {
     //! Defines mathematical expressions commonly used when computing distribution
@@ -29,7 +29,7 @@ pub mod spline {
     use anyhow::Result;
     use anyhow::bail;
     use ndarray::Array1;
-    use prosia_extensions::types::RVector;
+    use planetes_ext::types::RVector;
 
     /// Given the arrays `xv` and `yv` of lengh `n` containing a tabulated
     /// function, i.e., `yv[i] = f(xv[i])`, with `xv[0] < xv[1] < ... < xv[n-1]`,
@@ -141,7 +141,7 @@ pub mod legendre {
     use anyhow::Result;
     use anyhow::bail;
     use ndarray::Array1;
-    use prosia_extensions::types::RVector;
+    use planetes_ext::types::RVector;
 
     /// Computes the associated Legendre polynomials P_m^n(x) and their derivatives
     ///
@@ -290,7 +290,7 @@ pub mod bessel {
     use anyhow::bail;
     use ndarray::Array1;
     use num_complex::{Complex, Complex64};
-    use prosia_extensions::types::{CVector, RVector};
+    use planetes_ext::types::{CVector, RVector};
 
     use crate::fractal::FractalGeometry;
     use crate::fractal::{FractalConfig, FractalCutoff};
@@ -590,7 +590,7 @@ pub mod linalg {
     use anyhow::{Result, bail};
     use ndarray::{Array1, Array2};
     use num_complex::Complex64;
-    use prosia_extensions::types::{CMatrix, CVector, RMatrix, RVector, UVector};
+    use planetes_ext::types::{CMatrix, CVector, RMatrix, RVector, UVector};
 
     fn lu_decomposition(a: &mut RMatrix, n: usize) -> Result<UVector> {
         let mut d = 1.0;

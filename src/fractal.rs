@@ -13,7 +13,7 @@ use anyhow::anyhow;
 use anyhow::{Context, Result};
 use ndarray::s;
 use num_complex::{Complex, Complex64};
-use prosia_extensions::types::{CMatrix, CTensor, CVector, RMatrix, RVector};
+use planetes_ext::types::{CMatrix, CTensor, CVector, RMatrix, RVector};
 
 use crate::geofractal::get_geometric_cross_section_tazaki;
 use crate::geofractal::{AFactor, IntegrationMethod};

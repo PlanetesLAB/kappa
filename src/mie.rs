@@ -12,7 +12,7 @@ use std::f64::consts::PI;
 use anyhow::Result;
 use anyhow::anyhow;
 use num_complex::{Complex, Complex64, ComplexFloat};
-use prosia_extensions::types::{CVector, RMatrix, RVector};
+use planetes_ext::types::{CVector, RMatrix, RVector};
 
 #[derive(Debug)]
 pub struct MieConfig {

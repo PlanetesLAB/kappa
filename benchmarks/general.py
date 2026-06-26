@@ -11,13 +11,13 @@ def load_data(filename):
 
 
 c1_data = load_data(
-    "/Users/kmaitreys/Projects/ProsiaLAB/scorpia/examples/default/kappa_opacity_comp_1.dat"
+    "/Users/kmaitreys/Projects/PlanetesLAB/scorpia/examples/default/kappa_opacity_comp_1.dat"
 )  # Diana
 c2_data = load_data(
-    "/Users/kmaitreys/Projects/ProsiaLAB/scorpia/examples/default/kappa_opacity_comp_2.dat"
+    "/Users/kmaitreys/Projects/PlanetesLAB/scorpia/examples/default/kappa_opacity_comp_2.dat"
 )  # Dsharp
 c3_data = load_data(
-    "/Users/kmaitreys/Projects/ProsiaLAB/scorpia/examples/default/kappa_opacity_comp_3.dat"
+    "/Users/kmaitreys/Projects/PlanetesLAB/scorpia/examples/default/kappa_opacity_comp_3.dat"
 )  # Custom
 
 

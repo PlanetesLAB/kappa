@@ -13,7 +13,7 @@ optool_ksca = optool_data[:, 2]
 optool_g = optool_data[:, 3]
 
 # Read the data (kappa)
-with open("/Users/kmaitreys/Projects/ProsiaLAB/kappa/output/kappa_opacity.dat") as f:
+with open("/Users/kmaitreys/Projects/PlanetesLAB/kappa/output/kappa_opacity.dat") as f:
     lines = [line for line in f if not line.startswith("#")]
 
 # skip first 2 non-comment lines

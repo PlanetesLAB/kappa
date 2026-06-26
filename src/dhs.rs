@@ -16,7 +16,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use num_complex::ComplexFloat;
 use num_complex::{Complex, Complex64};
-use prosia_extensions::types::{CMatrix, CVector, RMatrix, RVector};
+use planetes_ext::types::{CMatrix, CVector, RMatrix, RVector};
 
 #[derive(Debug)]
 pub struct DHSConfig<'a> {

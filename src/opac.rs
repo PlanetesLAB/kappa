@@ -22,7 +22,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use ndarray::s;
 use num_complex::ComplexFloat;
 use num_complex::{Complex, Complex64};
-use prosia_extensions::types::{BVector, CVector, RMatrix, RVector};
+use planetes_ext::types::{BVector, CVector, RMatrix, RVector};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::components::get_lnk_data;
