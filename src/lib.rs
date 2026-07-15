@@ -10,13 +10,15 @@
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/PlanetesLAB/planeteslab.github.io/refs/heads/main/images/planeteslab.jpeg"
 )]
+#![doc = include_str!("../README.md")]
+
 //! # Introduction
 //! This tool produces complex dust particle opacities right from the command line. It is
 //! derived from Michiel Min’s DHS OpacityTool and also implements Ryo Tazaki’s MMF
 //! theory for highly porous aggregates.
 //!
 //! For a brief overview behind the details of the implementation from a theoretical
-//! perspective, read the [book](https://planeteslab.github.io/books/kappa).
+//! perspective, read the [book](https://planeteslab.github.io/tools/software/kappa/).
 //!
 //! ## Capabilities
 //! - stand-alone tool, fully command line driven, no input files need to be edited

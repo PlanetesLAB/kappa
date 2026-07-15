@@ -21,4 +21,4 @@ Detailed technical documentation generated from the Rust source is available at 
 
 An primer on dust opacities in the ISM written using mdBook, covering the theoretical background and implementation details of `kappa`.
 
-[![Primer](https://img.shields.io/badge/book-mdBook-informational?style=for-the-badge&labelColor=20232a&color=4e7ca1)](https://planeteslab.github.io/books/kappa/)
+[![Primer](https://img.shields.io/badge/book-mdBook-informational?style=for-the-badge&labelColor=20232a&color=4e7ca1)](https://planeteslab.github.io/tools/software/kappa/)
