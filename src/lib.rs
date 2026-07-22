@@ -10,7 +10,6 @@
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/PlanetesLAB/documentation/refs/heads/main/logo.jpg"
 )]
-#![doc = include_str!("../README.md")]
 
 //! # Introduction
 //! This tool produces complex dust particle opacities right from the command line. It is
