@@ -8,7 +8,7 @@
 #![allow(clippy::inconsistent_struct_constructor)]
 #![allow(clippy::cast_possible_wrap)]
 #![doc(
-    html_logo_url = "https://raw.githubusercontent.com/PlanetesLAB/planeteslab.github.io/refs/heads/main/images/planeteslab.jpeg"
+    html_logo_url = "https://raw.githubusercontent.com/PlanetesLAB/documentation/refs/heads/main/logo.jpg"
 )]
 #![doc = include_str!("../README.md")]
 
