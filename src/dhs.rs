@@ -7,7 +7,7 @@
 //! elements for these structures is [`toon_ackerman_1981`]
 //! ([Toon & Ackerman 1981](https://doi.org/10.1364/AO.20.003657)). For speed, you
 //! can set xlim 1e3 or so to set a limit for the size parameter (`x = 2πa/λ`) where
-//! `kappa` switches from DHS to [`crate::mie::de_rooij_1984`].
+//! `kappa` switches from DHS to [de_rooij_1984](`crate::mie::de_rooij_1984`).
 #![allow(clippy::inline_always)]
 
 use std::f64::consts::PI;
