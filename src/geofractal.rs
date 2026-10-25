@@ -36,6 +36,7 @@ pub enum AFactor {
 /// * `iqapp` - Select a method for solving radial and angular integration
 ///   when computing the mean overlapping efficiency.
 ///
+/// ```text
 ///         --------------------------------------------------------
 ///                   |    radial  (x)        |  angular (u)        |
 ///         ---------------------------------------------------------
@@ -43,6 +44,7 @@ pub enum AFactor {
 ///         iqapp = 2 |   numerical  ( D<=2 ) |  analytical         |
 ///                   |   analytical ( D> 2 ) |                     |
 ///         --------------------------------------------------------
+/// ```
 ///
 ///
 /// # Errors
@@ -98,27 +100,33 @@ fn gfit(pn: f64) -> f64 {
 ///
 /// For `iqcor = 1` (Gaussian cut-off model)
 ///     
+/// ```text
 ///                    xmin       /ln(xmax)
 ///      sigma  = --------------  |   dlnx frad(x)*S(rho),
 ///               16*Gamma(df/2)  /ln(xmin)
 ///     
 ///            xmin = df*(k0/PN)^(2/df); a=(df-2)/2; rho = sqrt(x/xmin)
+/// ```
 ///     
 /// For iqcor=2 [Exponential cut-off model]
 ///     
+/// ```text
 ///                   xmin^2      /ln(xmax)
 ///      sigma  = --------------  |   dlnx frad(x)*S(rho),
 ///                16*Gamma(df)   /ln(xmin)
 ///     
 ///            xmin = 2*sqrt(df(df+1)/2)*(k0/PN)^(1.0/df); a=df-2; rho = x/xmin
+/// ```
 ///     
 /// For iqcor=3 [Fractal dimension cut-off model]
 ///     
+/// ```text
 ///               xmin^{2/df} /ln(xmax)
 ///      sigma  = ----------  |  dlnx frad(x)*S(rho),
 ///                  16      /ln(xmin)
 ///     
 ///            xmin = 2^(df-1)*k0/PN; a=(df-2)/df; rho = (x/xmin)^(1/df)
+/// ```
 ///     
 /// where df is fractal dimension, R0 is the monomer radius, Rg is
 /// the radius of gyration, frad(x) is the radial integrand function,
@@ -126,11 +134,13 @@ fn gfit(pn: f64) -> f64 {
 ///
 /// frad(x)dlnx = x^{a}*exp(-x) dlnx = x^{a-1}exp(-x) dx
 ///     
+/// ```text
 ///                16*rho^2  / (1/rho)
 ///      S(rho)  = --------  |  du fang(rho,u),
 ///                   pi     /0
 ///     
 ///     fang(rho,u) = [Arcsin{sqrt(1-rho^2u^2)} - rho*u*sqrt{1-rho^2u^2}]*u/sqrt(1-u^2)
+/// ```
 ///
 /// Note that the angular integral function S(rho) ≈1 when rho >> 1.
 fn mean_overlap_efficiency(

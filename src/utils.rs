@@ -374,7 +374,9 @@ pub mod bessel {
     ///  The integration range `[umin,umax]` is determined as follows.
     ///  The integrand of Equation (*) is
     ///
+    /// ```text
     ///         (u/xg)^{df-1}fc(u/xg) du = (u/xg) ^{d_f}fc(u/xg) dlnu
+    /// ```
     ///
     ///  u_max is chosen so that fc(u/xg) ~ exp[-eta1].
     ///       For iqcor=1 (Gauss)
@@ -387,7 +389,9 @@ pub mod bessel {
     ///
     ///  u_min is chosen so that (u_min/xg)^{d_f} ~ exp[-eta2], thus,
     ///
+    /// ```text
     ///               umin ~ xg * exp(-eta2/d_f)
+    /// ```
     ///
     ///  where eta2 = 40.0.
     ///

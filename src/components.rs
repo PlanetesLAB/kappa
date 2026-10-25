@@ -15892,7 +15892,7 @@ static K0_CH3OH_C: &[f64; 1009] = &[
 /// Methanol ice
 ///
 /// # References
-/// https://ui.adsabs.harvard.edu/abs/2020ApJ...901...52G
+/// <https://ui.adsabs.harvard.edu/abs/2020ApJ...901...52G>
 pub static CH3OH_C: StaticComponent = StaticComponent {
     name: "Methanol ice",
     class: "ice",

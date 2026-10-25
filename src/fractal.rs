@@ -677,6 +677,7 @@ fn renormalize(fracc: &FractalConfig, d: &CMatrix, dang: f64, nmax: usize) -> (C
 /// # PART I.
 /// Calculate a(nu,n,p) and b(nu,n,p):
 ///
+/// ```text
 ///                   2p + 1  /+1
 ///       a(nu,n,p) = -------- | dx P_nu^1(x) * P_n^1(x) * P_p(x),
 ///                      2     /-1
@@ -684,6 +685,7 @@ fn renormalize(fracc: &FractalConfig, d: &CMatrix, dang: f64, nmax: usize) -> (C
 ///                    2p + 1  /+1                         dP_p(x)
 ///       b(nu,n,p) = -------- | dx P_nu^1(x) * P_n^1(x) * -------,
 ///                      2     /-1                            dx
+/// ```
 ///
 /// where `P_n^m` is the associated Legendre function (`n`: degree, `m`: order),
 ///  `P_n` is the Legendre polynominal function
