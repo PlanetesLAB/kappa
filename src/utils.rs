@@ -736,6 +736,7 @@ pub mod gamma {
     //! <https://github.com/statrs-dev/statrs/blob/master/src/function/gamma.rs>
 
     #![allow(clippy::excessive_precision)]
+    use std::f64::consts::EULER_GAMMA;
     use std::f64::consts::{E, PI};
 
     use anyhow::Result;
@@ -1090,7 +1091,7 @@ pub mod gamma {
     #[must_use]
     pub fn digamma(x: f64) -> f64 {
         let c = 12.0;
-        let d1 = -0.57721566490153286;
+        let d1 = -EULER_GAMMA;
         let d2 = 1.6449340668482264365;
         let s = 1e-6;
         let s3 = 1.0 / 12.0;
