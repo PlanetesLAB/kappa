@@ -163,6 +163,7 @@ fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult>
         );
         eprintln!("         the apriori estimate will be used instead.");
     }
+    let nfou = nfou.min(nmax);
 
     let nangle = ((mie_cfg.thmax - mie_cfg.thmin) / mie_cfg.step) as usize + 1;
     if nangle > 6000 {
