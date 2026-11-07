@@ -22,6 +22,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use ndarray::s;
 use num_complex::ComplexFloat;
 use num_complex::{Complex, Complex64};
+use planetes_ext::quadrature::gauss_legendre;
 use planetes_ext::types::{BVector, CVector, RMatrix, RVector};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
@@ -34,7 +35,6 @@ use crate::fractal::{FractalCutoff, FractalGeometry, FractalSolver};
 use crate::io::read_lnk_file;
 use crate::mie::MieConfig;
 use crate::mie::de_rooij_1984;
-use crate::utils::legendre::gauss_legendre;
 use crate::utils::regrid_lnk_data;
 
 #[derive(Debug)]

@@ -136,8 +136,6 @@ pub mod spline {
 }
 
 pub mod legendre {
-    use std::f64::consts::PI;
-
     use anyhow::Result;
     use anyhow::bail;
     use ndarray::Array1;
@@ -243,45 +241,6 @@ pub mod legendre {
             p1 = pf;
         }
         (pn, pd)
-    }
-
-    #[must_use]
-    pub fn gauss_legendre(x1: f64, x2: f64, n: usize) -> (RVector, RVector) {
-        let eps = 1.0e-14;
-
-        let mut pp = 0.0;
-        let m = n.div_ceil(2);
-        let xm = 0.5 * (x2 + x1);
-        let xl = 0.5 * (x2 - x1);
-
-        let mut x: RVector = Array1::zeros(n);
-        let mut w: RVector = Array1::zeros(n);
-
-        let nf = n as f64;
-
-        for i in 0..m {
-            let ir = i as f64;
-            let mut z = (PI * (ir + 0.75) / (nf + 0.5)).cos();
-            let mut z1 = 2.0 * z;
-            while (z - z1).abs() > eps {
-                let mut p1 = 1.0;
-                let mut p2 = 0.0;
-                for j in 0..n {
-                    let jf = j as f64;
-                    let p3 = p2;
-                    p2 = p1;
-                    p1 = ((2.0 * jf + 1.0) * z * p2 - jf * p3) / (jf + 1.0);
-                }
-                pp = nf * (z * p1 - p2) / (z * z - 1.0);
-                z1 = z;
-                z = z1 - p1 / pp;
-            }
-            x[i] = xm - xl * z;
-            x[n - 1 - i] = xm + xl * z;
-            w[i] = 2.0 * xl / ((1.0 - z * z) * pp * pp);
-            w[n - 1 - i] = w[i];
-        }
-        (x, w)
     }
 }
 

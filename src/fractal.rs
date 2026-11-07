@@ -13,6 +13,7 @@ use anyhow::anyhow;
 use anyhow::{Context, Result};
 use ndarray::s;
 use num_complex::{Complex, Complex64};
+use planetes_ext::quadrature::gauss_legendre;
 use planetes_ext::types::{CMatrix, CTensor, CVector, RMatrix, RVector};
 
 use crate::geofractal::get_geometric_cross_section_tazaki;
@@ -723,7 +724,7 @@ fn mean_field(fracc: &FractalConfig, ad: &CMatrix, x_g: f64, nmax: usize) -> Res
     let x2 = 1.0;
 
     // Gauss-Legendre quadrature
-    let (x, w) = legendre::gauss_legendre(x1, x2, jm);
+    let (x, w) = gauss_legendre(x1, x2, jm);
 
     let order = 1;
     let pmax = 2 * nmax;
