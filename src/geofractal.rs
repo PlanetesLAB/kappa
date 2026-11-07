@@ -155,27 +155,26 @@ fn mean_overlap_efficiency(
 
     let aicgm: f64;
     let xmin: f64;
-    let factor: f64;
 
     let mut sigma: f64;
 
-    match cutoff {
+    let factor: f64 = match cutoff {
         FractalCutoff::Gaussian => {
             aicgm = 0.5 * (df - 2.0);
             xmin = df * (k0 / pn).powf(2.0 / df);
-            factor = xmin / 16.0 / gamma(0.5 * df);
+            xmin / 16.0 / gamma(0.5 * df)
         }
         FractalCutoff::Exponential => {
             aicgm = df - 2.0;
             xmin = 2.0 * (0.5 * df * (df + 1.0)).sqrt() * (k0 / pn).powf(1.0 / df);
-            factor = xmin * xmin / 16.0 / gamma(df);
+            xmin * xmin / 16.0 / gamma(df)
         }
         FractalCutoff::FractalDimension => {
             aicgm = (df - 2.0) / df;
             xmin = 2.0f64.powf(df - 1.0) * k0 / pn;
-            factor = xmin.powf(2.0 / df) / 16.0;
+            xmin.powf(2.0 / df) / 16.0
         }
-    }
+    };
 
     if df > 2.0 && *method == IntegrationMethod::AnAn {
         sigma = factor * gamma(aicgm) * gamma_ur(aicgm, xmin);
@@ -193,9 +192,10 @@ fn mean_overlap_efficiency(
             }
         }
         for i in 0..nx - 1 {
-            sigma += 0.5
-                * (radial_integrand(aicgm, x[i]) * sang[i]
-                    + radial_integrand(aicgm, x[i + 1]) * sang[i + 1]);
+            sigma += f64::midpoint(
+                radial_integrand(aicgm, x[i]) * sang[i],
+                radial_integrand(aicgm, x[i + 1]) * sang[i + 1],
+            );
         }
         sigma *= factor * dlnx * factor;
     }
@@ -230,7 +230,10 @@ fn angular_integration(cutoff: &FractalCutoff, x: f64, xmin: f64, df: f64) -> f6
         *val = umin + du * jf;
     }
     for j in 0..nmax_u - 1 {
-        sang += 0.5 * (angular_integrand(rho, u[j]) + angular_integrand(rho, u[j + 1])) * du;
+        sang += f64::midpoint(
+            angular_integrand(rho, u[j]),
+            angular_integrand(rho, u[j + 1]),
+        ) * du;
     }
     sang = 16.0 * rho * rho * sang / PI;
 

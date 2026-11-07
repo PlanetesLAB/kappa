@@ -323,7 +323,7 @@ pub mod bessel {
             .into_iter()
             .zip(u.windows(2))
             .map(|(intg_unit_pair, u_pair)| {
-                0.5 * (intg_unit_pair[0] + intg_unit_pair[1]) * (u_pair[1] - u_pair[0])
+                f64::midpoint(intg_unit_pair[0], intg_unit_pair[1]) * (u_pair[1] - u_pair[0])
             })
             .sum();
 

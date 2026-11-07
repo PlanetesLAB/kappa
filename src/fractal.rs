@@ -236,7 +236,7 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
 
     for j in 0..(2 * fracc.nang) {
         let q = 2.0 * k * (0.5 * ang[j]).sin();
-        let s11 = 0.5 * (s2[j].norm().powi(2) + s1[j].norm().powi(2));
+        let s11 = f64::midpoint(s2[j].norm().powi(2), s1[j].norm().powi(2));
         let s12 = 0.5 * (s2[j].norm().powi(2) - s1[j].norm().powi(2));
         let s33 = (s1[j] * s2[j].conj()).re;
         let s34 = (s2[j] * s1[j].conj()).im;
@@ -781,8 +781,8 @@ fn mean_field(fracc: &FractalConfig, ad: &CMatrix, x_g: f64, nmax: usize) -> Res
                         .map(|(((w, al1n_nu), al1n_n), dln_p)| w * al1n_nu * al1n_n * dln_p)
                         .sum();
                 }
-                anunp *= 0.5 * (2.0 * pf + 1.0);
-                bnunp *= 0.5 * (2.0 * pf + 1.0);
+                anunp *= f64::midpoint(2.0 * pf, 1.0);
+                bnunp *= f64::midpoint(2.0 * pf, 1.0);
 
                 sum_a += (nf * (nf + 1.0) + nuf * (nuf + 1.0) - pf * (pf + 1.0)) * anunp * val;
                 sum_b += bnunp * val;

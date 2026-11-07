@@ -602,20 +602,19 @@ impl KappaConfig {
             })?;
             bar.finish_with_message("Processing complete!");
             exit(0);
-        } else {
-            let p = self.compute_kappa(0, self.amin, self.amax)?;
-            if !p.is_ok {
-                if self.mmf_ss {
-                    eprintln!("WARNING: opacities OK, but some F_nn,g_asym may not be accurate");
-                } else {
-                    eprintln!("WARNING: opacities OK, but some F_nn,g_asym are set to zero");
-                }
-            }
-
-            // TODO: FITS writer will be implemented later
-
-            self.write_opacities("kappa_opacity", &p)?;
         }
+        let p = self.compute_kappa(0, self.amin, self.amax)?;
+        if !p.is_ok {
+            if self.mmf_ss {
+                eprintln!("WARNING: opacities OK, but some F_nn,g_asym may not be accurate");
+            } else {
+                eprintln!("WARNING: opacities OK, but some F_nn,g_asym are set to zero");
+            }
+        }
+
+        // TODO: FITS writer will be implemented later
+
+        self.write_opacities("kappa_opacity", &p)?;
 
         Ok(())
     }
