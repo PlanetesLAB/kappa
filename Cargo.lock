@@ -228,8 +228,8 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "planetes-ext"
-version = "1.3.0"
-source = "git+https://github.com/PlanetesLAB/planetes-ext?tag=v1.3.0#6a70e41627751f0d5bcb98366d8f020826bc71d9"
+version = "1.6.0"
+source = "git+https://github.com/PlanetesLAB/planetes-ext?tag=v1.6.0#e783a5ad2b325f93bb0de5b4c42683acd21bf56b"
 dependencies = [
  "ndarray",
  "num-complex",
