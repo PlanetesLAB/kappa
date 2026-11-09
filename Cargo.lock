@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "kappa"
-version = "0.1.28"
+version = "0.1.29"
 dependencies = [
  "anyhow",
  "approx",
@@ -228,8 +228,8 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "planetes-ext"
-version = "1.6.0"
-source = "git+https://github.com/PlanetesLAB/planetes-ext?tag=v1.6.0#e783a5ad2b325f93bb0de5b4c42683acd21bf56b"
+version = "1.7.0"
+source = "git+https://github.com/PlanetesLAB/planetes-ext?tag=v1.7.0#c78d2be68caedaed6214c530d4f719f7b37b53da"
 dependencies = [
  "ndarray",
  "num-complex",
