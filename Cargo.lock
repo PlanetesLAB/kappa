@@ -65,7 +65,7 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "kappa"
-version = "0.1.29"
+version = "0.1.30"
 dependencies = [
  "anyhow",
  "approx",
