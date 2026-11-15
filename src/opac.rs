@@ -12,13 +12,9 @@ use std::io::Write;
 use std::mem::swap;
 use std::path::Path;
 use std::process::exit;
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering as AtomicOrdering;
 
 use anyhow::Result;
 use anyhow::anyhow;
-use indicatif::{ProgressBar, ProgressStyle};
 use ndarray::s;
 use num_complex::ComplexFloat;
 use num_complex::{Complex, Complex64};
@@ -35,6 +31,7 @@ use crate::fractal::{FractalCutoff, FractalGeometry, FractalSolver};
 use crate::io::read_lnk_file;
 use crate::mie::MieConfig;
 use crate::mie::de_rooij_1984;
+use crate::progress::Progress;
 use crate::utils::regrid_lnk_data;
 
 #[derive(Debug)]
@@ -579,16 +576,7 @@ impl KappaConfig {
             let afact = (self.amax / self.amin).powf(1.0 / self.na as f64);
             let afsub = afact.powf(1.0 / (nsub - 1) as f64);
 
-            let bar = Arc::new(ProgressBar::new(self.nlam as u64));
-
-            bar.set_style(
-                ProgressStyle::default_bar()
-                    .template(
-                        "{spinner} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-                    )
-                    .unwrap()
-                    .progress_chars("█▓▒░ "),
-            );
+            let progress = Progress::new("kappa", "sizes", self.na);
 
             (0..self.na).into_par_iter().try_for_each(|ia| {
                 let iaf = ia as f64;
@@ -597,10 +585,9 @@ impl KappaConfig {
                 let aminsplit = asplit * afsub.powf(-nsubf / 2.0);
                 let amaxsplit = asplit * afsub.powf(nsubf / 2.0);
                 let _ = self.compute_kappa(ia, aminsplit, amaxsplit)?;
-                bar.inc(1); // Increment the progress bar inside the parallel loop
+                progress.add(1);
                 Ok::<(), KappaError>(())
             })?;
-            bar.finish_with_message("Processing complete!");
             exit(0);
         }
         let p = self.compute_kappa(0, self.amin, self.amax)?;
@@ -806,32 +793,20 @@ impl KappaConfig {
 
         let p =
             {
-                let bar = ProgressBar::new(self.nlam as u64);
-                bar.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
-                .unwrap()
-                .progress_chars("█▓▒░ "),
-        );
-                let counter = Arc::new(AtomicUsize::new(0));
                 let results: Result<Vec<KappaResult>, _> = if self.split {
                     (0..self.nlam)
                         .map(|ilam| self.over_wavelengths(ilam, &kps))
                         .collect()
                 } else {
-                    let counter = Arc::clone(&counter);
-                    let bar = bar.clone();
-                    let res = (0..self.nlam)
+                    let progress = Progress::new("kappa", "wavelengths", self.nlam);
+                    (0..self.nlam)
                         .into_par_iter()
                         .map(|ilam| {
                             let r = self.over_wavelengths(ilam, &kps);
-                            let prev = counter.fetch_add(1, AtomicOrdering::SeqCst);
-                            bar.set_position((prev + 1) as u64);
+                            progress.add(1);
                             r
                         })
-                        .collect();
-                    bar.finish_with_message("Processing complete!");
-                    res
+                        .collect()
                 };
 
                 results.map(|lamrs| {
