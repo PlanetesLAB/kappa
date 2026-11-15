@@ -791,60 +791,59 @@ impl KappaConfig {
             mu: &mu,
         };
 
-        let p =
-            {
-                let results: Result<Vec<KappaResult>, _> = if self.split {
-                    (0..self.nlam)
-                        .map(|ilam| self.over_wavelengths(ilam, &kps))
-                        .collect()
-                } else {
-                    let progress = Progress::new("kappa", "wavelengths", self.nlam);
-                    (0..self.nlam)
-                        .into_par_iter()
-                        .map(|ilam| {
-                            let r = self.over_wavelengths(ilam, &kps);
-                            progress.add(1);
-                            r
-                        })
-                        .collect()
-                };
-
-                results.map(|lamrs| {
-                    let rho = lamrs[0].mass / lamrs[0].vol;
-                    let k_ext = lamrs.iter().map(|lamr| lamr.k_ext).collect::<RVector>();
-                    let k_sca = lamrs.iter().map(|lamr| lamr.k_sca).collect::<RVector>();
-                    let k_abs = lamrs.iter().map(|lamr| lamr.k_abs).collect::<RVector>();
-                    let g = lamrs.iter().map(|lamr| lamr.g).collect::<RVector>();
-                    let trust = lamrs.iter().map(|lamr| lamr.trust).collect::<BVector>();
-                    let mueller = lamrs
-                        .into_iter()
-                        .map(|lamr| lamr.mueller)
-                        .collect::<Vec<Mueller>>();
-
-                    let mut is_ok = true;
-                    let mut is_ok_lmin = 0.0;
-
-                    for ilam in 0..self.nlam {
-                        if !trust[ilam] {
-                            is_ok = false;
-                            is_ok_lmin = self.lam[ilam];
-                        }
-                    }
-
-                    Particle {
-                        rho,
-                        k_abs,
-                        k_ext,
-                        k_sca,
-                        g,
-                        f: mueller,
-                        trust,
-                        is_ok,
-                        is_ok_lmin,
-                        ..Default::default()
-                    }
-                })?
+        let p = {
+            let results: Result<Vec<KappaResult>, _> = if self.split {
+                (0..self.nlam)
+                    .map(|ilam| self.over_wavelengths(ilam, &kps))
+                    .collect()
+            } else {
+                let progress = Progress::new("kappa", "wavelengths", self.nlam);
+                (0..self.nlam)
+                    .into_par_iter()
+                    .map(|ilam| {
+                        let r = self.over_wavelengths(ilam, &kps);
+                        progress.add(1);
+                        r
+                    })
+                    .collect()
             };
+
+            results.map(|lamrs| {
+                let rho = lamrs[0].mass / lamrs[0].vol;
+                let k_ext = lamrs.iter().map(|lamr| lamr.k_ext).collect::<RVector>();
+                let k_sca = lamrs.iter().map(|lamr| lamr.k_sca).collect::<RVector>();
+                let k_abs = lamrs.iter().map(|lamr| lamr.k_abs).collect::<RVector>();
+                let g = lamrs.iter().map(|lamr| lamr.g).collect::<RVector>();
+                let trust = lamrs.iter().map(|lamr| lamr.trust).collect::<BVector>();
+                let mueller = lamrs
+                    .into_iter()
+                    .map(|lamr| lamr.mueller)
+                    .collect::<Vec<Mueller>>();
+
+                let mut is_ok = true;
+                let mut is_ok_lmin = 0.0;
+
+                for ilam in 0..self.nlam {
+                    if !trust[ilam] {
+                        is_ok = false;
+                        is_ok_lmin = self.lam[ilam];
+                    }
+                }
+
+                Particle {
+                    rho,
+                    k_abs,
+                    k_ext,
+                    k_sca,
+                    g,
+                    f: mueller,
+                    trust,
+                    is_ok,
+                    is_ok_lmin,
+                    ..Default::default()
+                }
+            })?
+        };
 
         Ok(p)
     }
