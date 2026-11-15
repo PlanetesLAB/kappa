@@ -8,6 +8,7 @@
 //! Based on `OPFRACTAL v3.0` from `optool` by Ryo Tazaki.
 
 use std::f64::consts::PI;
+use std::sync::Once;
 
 use anyhow::anyhow;
 use anyhow::{Context, Result};
@@ -183,10 +184,13 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
     }
 
     if (2 * nmax) >= 500 {
-        eprintln!("WARNING: The truncation order of monomer's scattered light");
-        eprintln!("         field exceeds the maximum value (=500).          ");
-        eprintln!("         This may cause a code crush at computations of   ");
-        eprintln!("         the spherical Bessel function of the first kind. ");
+        static WARNED: Once = Once::new();
+        WARNED.call_once(|| {
+            eprintln!(
+                "Warning: mmf: monomer truncation order {} >= 500; spherical Bessel functions may fail (further occurrences not reported)",
+                2 * nmax
+            );
+        });
     }
 
     // Compute the phase shift (cf: Eq. 9 in Tazaki & Tanaka 2018)
@@ -197,10 +201,12 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
     let dphi = dphic.max(dphi0);
 
     if dphi >= 1.0 {
-        eprintln!("WARNING: dphi >= 1");
-        eprintln!("         The phase shift by an aggregate exceeds unity.");
-        eprintln!("         Output of scattering matrix elements are not  ");
-        eprintln!("         physically guaranteed.                        ");
+        static WARNED: Once = Once::new();
+        WARNED.call_once(|| {
+            eprintln!(
+                "Warning: mmf: aggregate phase shift {dphi:.3e} >= 1; scattering matrix elements not guaranteed (further occurrences not reported)"
+            );
+        });
     }
 
     let (an, bn) = lorenz_mie(x0, fracc.refrel, nmax)?;

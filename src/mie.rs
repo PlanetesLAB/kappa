@@ -8,6 +8,7 @@
 #![allow(clippy::inline_always)]
 
 use std::f64::consts::PI;
+use std::sync::Once;
 
 use anyhow::Result;
 use anyhow::anyhow;
@@ -133,13 +134,12 @@ fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult>
     let mut c_ext_sum = 0.0;
     let mut c_sca_sum = 0.0;
     let mut nstop = nmax;
-    let mut aux: f64 = 0.0;
 
     for n in 0..nmax {
         let nf = n as f64;
         let afac = an[n] * an[n].conj();
         let bfac = bn[n] * bn[n].conj();
-        aux = (2.0 * (nf + 1.0) + 1.0) * (afac + bfac).abs();
+        let aux = (2.0 * (nf + 1.0) + 1.0) * (afac + bfac).abs();
         c_sca_sum += aux;
         c_ext_sum += (2.0 * (nf + 1.0) + 1.0) * (an[n] + bn[n]).re;
         if aux < mie_cfg.delta {
@@ -151,17 +151,13 @@ fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult>
     let nfou = nstop + 1;
 
     if nfou > nmax {
-        eprintln!("WARNING: `mie` sum not converged for scattering cross-section");
-        eprintln!("         with radius = {r} and size parameter = {x}");
-        eprintln!("         size distribution `nr` = {}", 0);
-        eprintln!("         Re(m) = {} and Im(m) = {}", m.re, m.im);
-        eprintln!("         apriori estimate of number of `mie` terms = {nmax}");
-        eprintln!("         Term {nmax} for `c_sca` was {aux}");
-        eprintln!(
-            "         should have been less than `delta` = {}",
-            mie_cfg.delta
-        );
-        eprintln!("         the apriori estimate will be used instead.");
+        static WARNED: Once = Once::new();
+        WARNED.call_once(|| {
+            eprintln!(
+                "Warning: mie: sum not converged at x = {x:.3e}, m = {:.3e} + {:.3e}i; a priori {nmax} terms used (further occurrences not reported)",
+                m.re, m.im
+            );
+        });
     }
     let nfou = nfou.min(nmax);
 

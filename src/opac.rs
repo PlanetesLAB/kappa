@@ -12,6 +12,7 @@ use std::io::Write;
 use std::mem::swap;
 use std::path::Path;
 use std::process::exit;
+use std::sync::Once;
 
 use anyhow::Result;
 use anyhow::anyhow;
@@ -279,7 +280,7 @@ impl KappaConfig {
             }
             KappaMethod::CDE => {
                 if self.lmin <= 2.0 * PI * self.amax {
-                    eprintln!("WARNING: CDE requires Rayleigh limit!");
+                    eprintln!("Warning: CDE requires Rayleigh limit!");
                 }
             }
         }
@@ -291,7 +292,7 @@ impl KappaConfig {
 
         // Other
         if self.split && self.blend_only {
-            eprintln!("WARNING: Turning off `-s` for `-blend_only`");
+            eprintln!("Warning: Turning off `-s` for `-blend_only`");
             self.split = false;
         }
         if self.split && self.sizedis != SizeDistribution::PowerLaw {
@@ -593,9 +594,9 @@ impl KappaConfig {
         let p = self.compute_kappa(0, self.amin, self.amax)?;
         if !p.is_ok {
             if self.mmf_ss {
-                eprintln!("WARNING: opacities OK, but some F_nn,g_asym may not be accurate");
+                eprintln!("Warning: opacities OK, but some F_nn,g_asym may not be accurate");
             } else {
-                eprintln!("WARNING: opacities OK, but some F_nn,g_asym are set to zero");
+                eprintln!("Warning: opacities OK, but some F_nn,g_asym are set to zero");
             }
         }
 
@@ -1737,7 +1738,10 @@ fn bruggeman_blend(abun: &[f64], e_in: &[Complex64]) -> Result<Complex64> {
         mm = me;
     }
     if tot.abs() / mm.abs() > 1e-6 {
-        eprintln!("WARNING: Bruggeman blend not converged");
+        static WARNED: Once = Once::new();
+        WARNED.call_once(|| {
+            eprintln!("Warning: bruggeman: blend not converged (further occurrences not reported)");
+        });
     }
     Ok(me)
 }
