@@ -256,9 +256,6 @@ impl KappaConfig {
         if (self.lmin - self.lmax).abs() < f64::EPSILON && self.nlam != 1 {
             self.nlam = 1;
         }
-        if self.nsparse > 0 {
-            println!("Creating sparse scattering matrix file");
-        }
 
         // DHS
         match self.method {
@@ -754,7 +751,6 @@ impl KappaConfig {
         // TODO: that we will implement later
 
         if self.write_grid || self.blend_only {
-            println!("Exiting after writing requested files");
             exit(0);
         }
 
