@@ -131,8 +131,8 @@ dependencies = [
 
 [[package]]
 name = "planetes-ext"
-version = "1.7.0"
-source = "git+https://github.com/PlanetesLAB/planetes-ext?tag=v1.7.0#c78d2be68caedaed6214c530d4f719f7b37b53da"
+version = "1.8.0"
+source = "git+https://github.com/PlanetesLAB/planetes-ext?tag=v1.8.0#70ccd5f49f38d3ddf15a042e9a508a0468e802b0"
 dependencies = [
  "ndarray",
  "num-complex",
