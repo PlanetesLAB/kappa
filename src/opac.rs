@@ -674,9 +674,9 @@ impl KappaConfig {
         // Copy the refractory index data for all materials into local arrays
         let mut e1 = RMatrix::zeros((self.nlam, self.materials.len()));
         let mut e2 = RMatrix::zeros((self.nlam, self.materials.len()));
-        for im in 0..self.materials.len() {
-            e1.slice_mut(s![.., im]).assign(&self.materials[im].re);
-            e2.slice_mut(s![.., im]).assign(&self.materials[im].im);
+        for (im, material) in self.materials.iter().enumerate().take(self.materials.len()) {
+            e1.slice_mut(s![.., im]).assign(&material.re);
+            e2.slice_mut(s![.., im]).assign(&material.im);
         }
 
         let mut e1_blend = RVector::zeros(self.nlam);
