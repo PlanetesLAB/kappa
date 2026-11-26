@@ -212,6 +212,7 @@
 //! | `ch4-a` / `c`             | $\mathrm{CH_4}$ ice                | Amorphous / Crystalline   |      0.47                                |       2.0                  |        20                  | [Gerakines+20](https://ui.adsabs.harvard.edu/abs/2020ApJ...901...52G)
 //! | `ch3oh-a` / `c`           | $\mathrm{CH_{3}OH}$ ice            | Amorphous / Crystalline   | 0.78/1.02                                |       2.0                  |        24                  | [Gerakines+20](https://ui.adsabs.harvard.edu/abs/2020ApJ...901...52G)
 
+#[cfg(feature = "cli")]
 pub mod cli;
 pub mod components;
 pub mod config;

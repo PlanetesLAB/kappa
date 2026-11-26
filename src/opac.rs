@@ -132,6 +132,8 @@ pub struct KappaConfig {
     pub xlim_dhs: f64,
     pub materials: Vec<Material>,
     pub outdir: String,
+    pub label: String,
+    pub quiet: bool,
 }
 
 impl Default for KappaConfig {
@@ -187,6 +189,8 @@ impl Default for KappaConfig {
             xlim_dhs: 1e4,
             materials: Vec::with_capacity(20),
             outdir: String::from("output"),
+            label: String::from("kappa_opacity"),
+            quiet: false,
         }
     }
 }
@@ -706,7 +710,7 @@ impl KappaConfig {
                 let aminsplit = asplit * afsub.powi(-half);
                 let amaxsplit = asplit * afsub.powi(half);
                 let p = self.compute_kappa_with_ns(ia, aminsplit, amaxsplit, nsub)?;
-                if !p.is_ok {
+                if !p.is_ok && !self.quiet {
                     if self.mmf_ss {
                         eprintln!(
                             "Warning: opacities OK, but some F_nn,g_asym may not be accurate (particle {}, a={:.3}, lam<={:.3})",
@@ -723,9 +727,11 @@ impl KappaConfig {
                         );
                     }
                 }
-                let fname = format!("kappa_opacity_{:03}", ia + 1);
+                let fname = format!("{}_{:03}", self.label, ia + 1);
                 self.write_opacities_with_bounds(&fname, &p, aminsplit, amaxsplit, nsub)?;
-                progress.add(1);
+                if !self.quiet {
+                    progress.add(1);
+                }
                 Ok::<(), KappaError>(())
             })?;
             return Ok(());
@@ -735,7 +741,7 @@ impl KappaConfig {
         if self.write_grid || self.blend_only {
             return Ok(());
         }
-        if !p.is_ok {
+        if !p.is_ok && !self.quiet {
             if self.mmf_ss {
                 eprintln!("Warning: opacities OK, but some F_nn,g_asym may not be accurate");
             } else {
@@ -745,7 +751,7 @@ impl KappaConfig {
 
         // TODO: FITS writer will be implemented later
 
-        self.write_opacities("kappa_opacity", &p)?;
+        self.write_opacities(&self.label, &p)?;
 
         Ok(())
     }
@@ -968,7 +974,9 @@ impl KappaConfig {
                     .into_par_iter()
                     .map(|ilam| {
                         let r = self.over_wavelengths(ilam, &kps);
-                        progress.add(1);
+                        if !self.quiet {
+                            progress.add(1);
+                        }
                         r
                     })
                     .collect()

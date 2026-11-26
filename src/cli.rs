@@ -1,1027 +1,825 @@
-//! Command line interface for the `kappa`.
-use std::env;
-use std::iter::Peekable;
-use std::path::Path;
-use std::process::exit;
+//! Command-line interface for `kappa`.
+
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use anyhow::anyhow;
-use colored::{Color, Colorize};
-use planetes_ext::types::RVector;
+use clap::{Parser, Subcommand, ValueEnum};
+use colored::Colorize;
 
 use crate::components::MATERIAL_KEYS;
-use crate::io::read_wavelength_grid;
-use crate::io::{read_lnk_file, read_sizedis_file};
-use crate::opac::RefractiveIndexKind;
-use crate::opac::{KappaConfig, KappaError, KappaMethod, SpecialConfigs};
-use crate::opac::{Material, MaterialKind};
-use crate::opac::{SizeDistribution, WavelengthKind};
-use crate::utils::regrid_lnk_data;
+use crate::components::try_get_lnk_data;
+use crate::io::{read_sizedis_file, read_wavelength_grid};
+use crate::opac::SpecialConfigs;
+use crate::opac::{KappaConfig, Material};
+use crate::opac::{
+    KappaError, KappaMethod, MaterialKind, RefractiveIndexKind, SizeDistribution, WavelengthKind,
+};
 
-enum SizeArg {
-    PowerLaw {
-        amin: f64,
-        amax: Option<f64>,
-        apow: Option<f64>,
-        na: Option<usize>,
-    },
-    LogNormal {
-        amin: f64,
-        amax: f64,
-        amean: f64,
-        asigma: f64,
-        na: Option<usize>,
-    },
-    File(String),
+/// Result of parsing CLI arguments.
+#[derive(Debug)]
+pub enum CliAction {
+    /// Execute an opacity calculation with the constructed configuration.
+    Run(Box<KappaConfig>),
+    /// The command completed directly (e.g., `kappa materials`).
+    Done,
 }
 
-enum WavelengthArg {
-    Value {
-        lmin: f64,
-        lmax: Option<f64>,
-        nlam: Option<usize>,
-    },
-    File(String),
+/// Built-in dust composition presets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Preset {
+    /// DIANA standard composition (87% pyroxene, 13% amorphous carbon, 25% porosity).
+    Diana,
+    /// DSHARP composition (astrosilicate, organics, troilite, water ice).
+    Dsharp,
+    /// Ice-free DSHARP composition (astrosilicate, organics, troilite).
+    DsharpNoIce,
 }
 
-/// Parses command line arguments and returns a [`KappaConfig`] struct
+/// Scattering calculation method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum MethodArg {
+    /// Distribution of Hollow Spheres (Min et al. 2005).
+    Dhs,
+    /// Lorenz-Mie theory for compact spheres.
+    Mie,
+    /// Modified Mean Field theory for fractal aggregates (Tazaki & Tanaka 2018).
+    Mmf,
+    /// Continuous Distribution of Ellipsoids in the Rayleigh limit.
+    Cde,
+}
+
+/// Subcommands for `kappa`.
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// List all built-in materials, or inspect metadata for a single material key.
+    Materials {
+        /// Optional material key to inspect in detail (e.g. `pyr-mg70`, `h2o-w`).
+        key: Option<String>,
+    },
+}
+
+/// Dust opacity and scattering matrix calculator.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Parser, Debug)]
+#[command(
+    name = "kappa",
+    version,
+    about = "Dust opacity and scattering matrix calculator",
+    long_about = "Computes dust opacities and Mueller scattering matrices using DHS, Mie, MMF, or CDE.\n\
+                  Without composition flags, defaults to the DIANA standard mixture."
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    // ---- Composition ----
+    /// Start from a built-in grain composition preset.
+    #[arg(long, value_enum, help_heading = "Composition")]
+    pub preset: Option<Preset>,
+
+    /// Core material specification `<key|file.lnk|n:k:rho>[=mfrac]` (repeatable).
+    #[arg(
+        short = 'c',
+        long = "core",
+        value_name = "SPEC",
+        help_heading = "Composition"
+    )]
+    pub core: Vec<String>,
+
+    /// Mantle material specification `<key|file.lnk|n:k:rho>[=mfrac]` (repeatable).
+    #[arg(
+        short = 'm',
+        long = "mantle",
+        value_name = "SPEC",
+        help_heading = "Composition"
+    )]
+    pub mantle: Vec<String>,
+
+    /// Core vacuum porosity in [0, 1). Defaults to 0.25 for DIANA preset, 0.0 otherwise.
+    #[arg(
+        short = 'p',
+        long = "porosity",
+        value_name = "FRAC",
+        help_heading = "Composition"
+    )]
+    pub porosity: Option<f64>,
+
+    /// Mantle vacuum porosity in [0, 1). Defaults to the core porosity if omitted.
+    #[arg(
+        long = "mantle-porosity",
+        value_name = "FRAC",
+        help_heading = "Composition"
+    )]
+    pub mantle_porosity: Option<f64>,
+
+    // ---- Size Distribution ----
+    /// Minimum grain radius in micrometers.
+    #[arg(
+        long,
+        default_value_t = 0.05,
+        conflicts_with_all = ["size", "size_file"],
+        help_heading = "Size Distribution"
+    )]
+    pub amin: f64,
+
+    /// Maximum grain radius in micrometers.
+    #[arg(
+        long,
+        default_value_t = 3000.0,
+        conflicts_with_all = ["size", "size_file"],
+        help_heading = "Size Distribution"
+    )]
+    pub amax: f64,
+
+    /// Monodisperse grain radius in micrometers (sets amin = amax = SIZE, na = 1).
+    #[arg(
+        long,
+        value_name = "UM",
+        conflicts_with_all = ["amin", "amax", "na", "apow", "log_normal", "normal", "size_file"],
+        help_heading = "Size Distribution"
+    )]
+    pub size: Option<f64>,
+
+    /// Number of grain-size bins (auto-computed if omitted).
+    #[arg(
+        long,
+        conflicts_with_all = ["size", "size_file"],
+        help_heading = "Size Distribution"
+    )]
+    pub na: Option<usize>,
+
+    /// Power-law size distribution slope p in dn/da ~ a^(-p).
+    #[arg(
+        long,
+        default_value_t = 3.5,
+        conflicts_with_all = ["log_normal", "normal", "size_file"],
+        help_heading = "Size Distribution"
+    )]
+    pub apow: f64,
+
+    /// Log-normal size distribution `MEAN:SIGMA` (centroid in um, dimensionless log width).
+    #[arg(
+        long = "log-normal",
+        value_name = "MEAN:SIGMA",
+        conflicts_with_all = ["normal", "size_file"],
+        help_heading = "Size Distribution"
+    )]
+    pub log_normal: Option<String>,
+
+    /// Linear normal size distribution `MEAN:SIGMA` (centroid and width in um).
+    #[arg(
+        long = "normal",
+        value_name = "MEAN:SIGMA",
+        conflicts_with_all = ["log_normal", "size_file"],
+        help_heading = "Size Distribution"
+    )]
+    pub normal: Option<String>,
+
+    /// Read a tabulated grain size distribution from file.
+    #[arg(
+        long = "size-file",
+        value_name = "PATH",
+        help_heading = "Size Distribution"
+    )]
+    pub size_file: Option<PathBuf>,
+
+    // ---- Wavelength Grid ----
+    /// Minimum wavelength in micrometers.
+    #[arg(
+        long,
+        default_value_t = 0.05,
+        conflicts_with_all = ["lam", "lam_file"],
+        help_heading = "Wavelength Grid"
+    )]
+    pub lmin: f64,
+
+    /// Maximum wavelength in micrometers.
+    #[arg(
+        long,
+        default_value_t = 1e4,
+        conflicts_with_all = ["lam", "lam_file"],
+        help_heading = "Wavelength Grid"
+    )]
+    pub lmax: f64,
+
+    /// Number of logarithmically spaced wavelength points.
+    #[arg(
+        long,
+        default_value_t = 300,
+        conflicts_with_all = ["lam", "lam_file"],
+        help_heading = "Wavelength Grid"
+    )]
+    pub nlam: usize,
+
+    /// Single wavelength in micrometers (sets lmin = lmax = LAM, nlam = 1).
+    #[arg(
+        long,
+        value_name = "UM",
+        conflicts_with_all = ["lmin", "lmax", "nlam", "lam_file"],
+        help_heading = "Wavelength Grid"
+    )]
+    pub lam: Option<f64>,
+
+    /// Read the wavelength grid from a file (single-column or `.lnk` file).
+    #[arg(
+        long = "lam-file",
+        value_name = "PATH",
+        help_heading = "Wavelength Grid"
+    )]
+    pub lam_file: Option<PathBuf>,
+
+    // ---- Scattering Method ----
+    /// Scattering theory to use.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = MethodArg::Dhs,
+        help_heading = "Scattering Method"
+    )]
+    pub method: MethodArg,
+
+    /// Maximum hollow-sphere volume fraction for DHS in [0, 1).
+    #[arg(long, default_value_t = 0.8, help_heading = "Scattering Method")]
+    pub fmax: f64,
+
+    /// Size parameter limit above which DHS falls back to Mie theory.
+    #[arg(long, default_value_t = 1e8, help_heading = "Scattering Method")]
+    pub xlim: f64,
+
+    /// Size parameter cap passed into the DHS concentric-sphere solver.
+    #[arg(
+        long = "xlim-dhs",
+        default_value_t = 1e4,
+        help_heading = "Scattering Method"
+    )]
+    pub xlim_dhs: f64,
+
+    /// Monomer radius in micrometers for MMF aggregates.
+    #[arg(
+        long = "mmf-a0",
+        default_value_t = 0.1,
+        help_heading = "Scattering Method"
+    )]
+    pub mmf_a0: f64,
+
+    /// Fractal dimension in (1, 3] for MMF aggregates.
+    #[arg(
+        long = "mmf-df",
+        value_name = "DF",
+        conflicts_with = "mmf_fill",
+        help_heading = "Scattering Method"
+    )]
+    pub mmf_df: Option<f64>,
+
+    /// Volume filling factor in (0, 1] for MMF aggregates (default 0.2 when `--mmf-df` is unset).
+    #[arg(
+        long = "mmf-fill",
+        value_name = "FILL",
+        conflicts_with = "mmf_df",
+        help_heading = "Scattering Method"
+    )]
+    pub mmf_fill: Option<f64>,
+
+    /// Fractal prefactor k0 for MMF aggregates (defaults to (5/3)^(df/2) if omitted).
+    #[arg(long = "mmf-kf", value_name = "K0", help_heading = "Scattering Method")]
+    pub mmf_kf: Option<f64>,
+
+    /// Keep approximate MMF scattering matrix when phase-shift criterion fails.
+    #[arg(long = "mmf-ss", help_heading = "Scattering Method")]
+    pub mmf_ss: bool,
+
+    // ---- Output ----
+    /// Number of angular bins (must be even and >= 2).
+    #[arg(long, default_value_t = 180, help_heading = "Output")]
+    pub nang: usize,
+
+    /// Forward-scattering chopping angle in degrees.
+    #[arg(long, default_value_t = 0.0, help_heading = "Output")]
+    pub chop: f64,
+
+    /// Write the full 6-element Mueller scattering matrix.
+    #[arg(short = 's', long = "scatter", help_heading = "Output")]
+    pub scatter: bool,
+
+    /// Write scattering matrices only at wavelengths in `LMIN[:LMAX]` (repeatable, implies `--scatter`).
+    #[arg(long = "sparse", value_name = "LMIN[:LMAX]", help_heading = "Output")]
+    pub sparse: Vec<String>,
+
+    /// Format output files for RADMC-3D (`.inp` extension and Z-matrix normalization).
+    #[arg(long = "radmc", help_heading = "Output")]
+    pub radmc: bool,
+
+    /// Split output into one file per grain size bin, averaging over `NSUB` sub-grains (default 5).
+    #[arg(
+        long = "split",
+        value_name = "NSUB",
+        num_args = 0..=1,
+        default_missing_value = "5",
+        help_heading = "Output"
+    )]
+    pub split: Option<usize>,
+
+    /// Write the wavelength and grain-size grids and exit without computing opacities.
+    #[arg(long = "write-grid", help_heading = "Output")]
+    pub write_grid: bool,
+
+    /// Write only the blended refractive index `.lnk` table and exit.
+    #[arg(long = "blend-only", help_heading = "Output")]
+    pub blend_only: bool,
+
+    /// Output directory.
+    #[arg(
+        short = 'o',
+        long = "outdir",
+        default_value = "output",
+        value_name = "DIR",
+        help_heading = "Output"
+    )]
+    pub outdir: PathBuf,
+
+    /// Base filename prefix for opacity output files.
+    #[arg(
+        long = "label",
+        default_value = "kappa_opacity",
+        value_name = "NAME",
+        help_heading = "Output"
+    )]
+    pub label: String,
+
+    /// Suppress progress heartbeat and non-fatal warning output.
+    #[arg(short = 'q', long = "quiet", help_heading = "Output")]
+    pub quiet: bool,
+}
+
+/// Parses command-line arguments from `std::env::args` and builds a [`CliAction`].
 ///
 /// # Errors
-/// Returns a [`KappaError`] if there is an issue with parsing the arguments,
-/// such as missing required arguments, invalid argument formats, or unknown options.
-pub fn launch() -> Result<KappaConfig, KappaError> {
-    let mut kpc = KappaConfig::default();
+/// Returns a [`KappaError`] if argument parsing, material parsing, or file loading fails.
+pub fn launch() -> Result<CliAction, KappaError> {
+    let cli = Cli::parse();
+    cli.into_action()
+}
 
-    let mut args = env::args().skip(1).peekable();
-    if args.peek().is_none() {
-        // If no arguments are given, use the DIANA composition
-        kpc = KappaConfig::diana();
-        return Ok(kpc);
+impl Cli {
+    /// Converts parsed CLI arguments into a [`CliAction`].
+    ///
+    /// # Errors
+    /// Returns a [`KappaError`] if any material specification, distribution parameter, or input
+    /// file is invalid.
+    pub fn into_action(self) -> Result<CliAction, KappaError> {
+        if let Some(Command::Materials { key }) = self.command {
+            match key {
+                Some(k) => inspect_material(&k)?,
+                None => list_materials(),
+            }
+            return Ok(CliAction::Done);
+        }
+
+        let config = self.into_config()?;
+        Ok(CliAction::Run(Box::new(config)))
     }
 
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-c" => {
-                if let Some(material_arg) = args.next() {
-                    match process_material(
-                        &kpc,
-                        &material_arg.clone(),
-                        &mut args,
-                        MaterialKind::Core,
-                    ) {
-                        Ok(material) => {
-                            kpc.materials.push(material);
-                        }
-                        Err(KappaError::ZeroMassFraction) => {
-                            args.next();
-                        }
-                        Err(e) => return Err(e),
-                    }
-                } else {
-                    return Err(anyhow!(
-                        "Missing material key/file/refractive index path after -c/-m"
-                    )
-                    .into());
+    /// Converts parsed CLI options into a [`KappaConfig`] ready for `prepare_inputs` and `initialize`.
+    ///
+    /// # Errors
+    /// Returns a [`KappaError`] if any material specification, distribution parameter, sparse range,
+    /// or referenced input file is invalid.
+    pub fn into_config(self) -> Result<KappaConfig, KappaError> {
+        let mut kpc = match self.preset {
+            Some(Preset::Diana) => KappaConfig::diana(),
+            Some(Preset::Dsharp) => KappaConfig::dsharp(),
+            Some(Preset::DsharpNoIce) => KappaConfig::dsharp_no_ice(),
+            None if self.core.is_empty() && self.mantle.is_empty() => KappaConfig::diana(),
+            None => KappaConfig::default(),
+        };
+
+        for spec in &self.core {
+            if let Some(mat) = parse_material_spec(spec, MaterialKind::Core)? {
+                kpc.materials.push(mat);
+            }
+        }
+        for spec in &self.mantle {
+            if let Some(mat) = parse_material_spec(spec, MaterialKind::Mantle)? {
+                kpc.materials.push(mat);
+            }
+        }
+
+        if let Some(pcore) = self.porosity {
+            kpc.pcore = pcore;
+        }
+        kpc.pmantle = self.mantle_porosity.unwrap_or(kpc.pcore);
+
+        // Size distribution
+        if let Some(path) = self.size_file {
+            let path_str = path.to_string_lossy().into_owned();
+            let (r, nr, moments) = read_sizedis_file(&path_str)?;
+            kpc.na = r.len();
+            kpc.r_file = r;
+            kpc.nr_file = nr;
+            kpc.ameans_file = moments;
+            kpc.sizedis_file = Some(path_str);
+            kpc.sizedis = SizeDistribution::File;
+        } else if let Some(size) = self.size {
+            kpc.amin = size;
+            kpc.amax = size;
+            kpc.na = 1;
+            kpc.sizedis = SizeDistribution::PowerLaw;
+        } else {
+            kpc.amin = self.amin;
+            kpc.amax = self.amax;
+            if let Some(na) = self.na {
+                kpc.na = na;
+            }
+            if let Some(spec) = self.log_normal {
+                let (mean, sigma) = parse_pair(&spec, "--log-normal")?;
+                if sigma <= 0.0 {
+                    return Err(anyhow!("`--log-normal` sigma must be positive").into());
                 }
-            }
-            "-m" => {
-                // Same as "-c"
-                if let Some(material_arg) = args.next() {
-                    match process_material(
-                        &kpc,
-                        &material_arg.clone(),
-                        &mut args,
-                        MaterialKind::Mantle,
-                    ) {
-                        Ok(material) => {
-                            kpc.materials.push(material);
-                        }
-                        Err(KappaError::ZeroMassFraction) => {
-                            args.next();
-                        }
-                        Err(e) => return Err(e),
-                    }
-                } else {
-                    return Err(anyhow!(
-                        "Missing material key/file/refractive index path after -c/-m"
-                    )
-                    .into());
+                kpc.amean = mean;
+                kpc.asigma = sigma;
+                kpc.sizedis = SizeDistribution::LogNormal;
+            } else if let Some(spec) = self.normal {
+                let (mean, sigma) = parse_pair(&spec, "--normal")?;
+                if sigma <= 0.0 {
+                    return Err(anyhow!("`--normal` sigma must be positive").into());
                 }
-            }
-            "--diana" => {
-                kpc = KappaConfig::diana();
-            }
-            "--dsharp" => {
-                kpc = KappaConfig::dsharp();
-            }
-            "--dsharp-no-ice" => {
-                kpc = KappaConfig::dsharp_no_ice();
-            }
-            // Size distribution options
-            "-a" => match process_grain_size(&mut args)? {
-                SizeArg::PowerLaw {
-                    amin,
-                    amax,
-                    apow,
-                    na,
-                } => {
-                    kpc.amin = amin;
-                    if let Some(amax) = amax {
-                        kpc.amax = amax;
-                    }
-                    if let Some(apow) = apow {
-                        kpc.apow = apow;
-                    }
-                    if let Some(na) = na {
-                        kpc.na = na;
-                    }
-                    kpc.sizedis = SizeDistribution::PowerLaw;
-                }
-                SizeArg::LogNormal {
-                    amin,
-                    amax,
-                    amean,
-                    asigma,
-                    na,
-                } => {
-                    kpc.amin = amin;
-                    kpc.amax = amax;
-                    kpc.amean = amean;
-                    kpc.asigma = asigma;
-                    if let Some(na) = na {
-                        kpc.na = na;
-                    }
-                    kpc.sizedis = SizeDistribution::Normal;
-                }
-                SizeArg::File(file) => {
-                    // Read file
-                    let (r, nr, moments) = read_sizedis_file(&file)?;
-                    kpc.na = r.len();
-                    kpc.r_file = r;
-                    kpc.nr_file = nr;
-                    kpc.ameans_file = moments;
-                    kpc.sizedis_file = Some(file);
-                    kpc.sizedis = SizeDistribution::File;
-                }
-            },
-            "--amin" => {
-                kpc.amin = args
-                    .next()
-                    .ok_or_else(|| anyhow!("Missing argument: --amin"))?
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid value type for argument: --amin"))?;
-            }
-            "--amax" => {
-                kpc.amax = args
-                    .next()
-                    .ok_or_else(|| anyhow!("Missing argument: --amax"))?
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid value type for argument: --amax"))?;
-            }
-            "--amean" => {
-                kpc.amean = args
-                    .next()
-                    .ok_or_else(|| anyhow!("Missing argument: --amean"))?
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid value type for argument: --amean"))?;
+                kpc.amean = mean;
+                kpc.asigma = -sigma;
                 kpc.sizedis = SizeDistribution::Normal;
+            } else {
+                kpc.apow = self.apow;
+                kpc.sizedis = SizeDistribution::PowerLaw;
             }
-            "--asig" | "--asigma" => {
-                kpc.asigma = args
-                    .next()
-                    .ok_or_else(|| anyhow!("Missing argument: --asig"))?
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid value type for argument: --asig"))?;
-                kpc.sizedis = SizeDistribution::Normal;
-            }
-            "--apow" => {
-                kpc.apow = args
-                    .next()
-                    .ok_or_else(|| anyhow!("Missing argument: --apow"))?
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid value type for argument: --apow"))?;
-            }
-            "--na" => {
-                kpc.na = args
-                    .next()
-                    .ok_or_else(|| anyhow!("Missing argument: --na"))?
-                    .parse::<usize>()
-                    .map_err(|_| anyhow!("Invalid value type for argument: --na"))?;
-            }
-            // Wavelength options
-            "-l" => match process_wavelength(&mut args)? {
-                WavelengthArg::Value { lmin, lmax, nlam } => {
-                    kpc.lmin = lmin;
-                    if let Some(lmax) = lmax {
-                        kpc.lmax = lmax;
-                    }
-                    if let Some(nlam) = nlam {
-                        kpc.nlam = nlam;
-                    }
-                    kpc.wavelength_kind = WavelengthKind::Other;
-                }
-                WavelengthArg::File(file) => {
-                    // Read file
-                    let (nlam, lam) = read_wavelength_grid(&file)?;
-                    kpc.nlam = nlam;
-                    let min_lam = lam.iter().reduce(|a, b| if a < b { a } else { b });
-                    let max_lam = lam.iter().reduce(|a, b| if a > b { a } else { b });
-                    match (min_lam, max_lam) {
-                        (Some(min), Some(max)) => {
-                            kpc.lmin = *min;
-                            kpc.lmax = *max;
-                        }
-                        _ => {
-                            return Err(anyhow!("Could not read wavelength grid from file").into());
-                        }
-                    }
-                    kpc.lam = lam;
-                    kpc.wavelength_kind = WavelengthKind::File;
-                }
-            },
-            "--lmin" => {
-                kpc.lmin = args
-                    .next()
-                    .ok_or_else(|| anyhow!("Missing argument: --lmin"))?
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid value type for argument: --lmin"))?;
-            }
-            "--lmax" => {
-                kpc.lmax = args
-                    .next()
-                    .ok_or_else(|| anyhow!("Missing argument: --lmax"))?
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid value type for argument: --lmax"))?;
-            }
-            "--nlam" => {
-                kpc.nlam = args
-                    .next()
-                    .ok_or_else(|| anyhow!("Missing argument: --nlam"))?
-                    .parse::<usize>()
-                    .map_err(|_| anyhow!("Invalid value type for argument: --nlam"))?;
-            }
-            // Grain geometry and computational method options
-            "-p" | "--porosity" => {
-                kpc.pcore = args
-                    .next()
-                    .ok_or_else(|| anyhow!("Missing argument: --porosity"))?
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid value type for argument: --porosity"))?;
-                if let Some(next_arg) = args.peek() {
-                    if let Ok(pmantle_val) = next_arg.parse::<f64>() {
-                        kpc.pmantle = pmantle_val;
-                        args.next();
-                    } else {
-                        kpc.pmantle = kpc.pcore;
-                    }
-                } else {
-                    kpc.pmantle = kpc.pcore;
-                }
-            }
-            "--dhs" | "--fmax" | "--mie" => {
+        }
+
+        // Wavelength grid
+        if let Some(path) = self.lam_file {
+            let path_str = path.to_string_lossy();
+            let (nlam, lam) = read_wavelength_grid(&path_str)?;
+            let min_lam = lam
+                .iter()
+                .copied()
+                .reduce(f64::min)
+                .ok_or_else(|| anyhow!("Empty wavelength grid file"))?;
+            let max_lam = lam
+                .iter()
+                .copied()
+                .reduce(f64::max)
+                .ok_or_else(|| anyhow!("Empty wavelength grid file"))?;
+            kpc.nlam = nlam;
+            kpc.lmin = min_lam;
+            kpc.lmax = max_lam;
+            kpc.lam = lam;
+            kpc.wavelength_kind = WavelengthKind::File;
+        } else if let Some(lam) = self.lam {
+            kpc.lmin = lam;
+            kpc.lmax = lam;
+            kpc.nlam = 1;
+            kpc.wavelength_kind = WavelengthKind::Other;
+        } else {
+            kpc.lmin = self.lmin;
+            kpc.lmax = self.lmax;
+            kpc.nlam = self.nlam;
+            kpc.wavelength_kind = WavelengthKind::Other;
+        }
+
+        // Scattering method
+        match self.method {
+            MethodArg::Dhs => {
                 kpc.method = KappaMethod::DHS;
-                if arg == "--mie" {
-                    kpc.fmax = 0.0;
-                } else if arg == "--fmax" {
-                    // Peek at the next argument to check if it's a valid number
-                    if let Some(next_arg) = args.peek() {
-                        if let Ok(fmax_value) = next_arg.parse::<f64>() {
-                            args.next(); // Consume the number
-                            kpc.fmax = fmax_value;
-                        } else {
-                            kpc.fmax = 0.8; // Default value when no valid number follows
-                        }
-                    } else {
-                        kpc.fmax = 0.8; // Default value when --fmax is the last argument
-                    }
-                } else {
-                    kpc.fmax = 0.8; // Default value if neither --mie nor --fmax is provided
-                }
+                kpc.fmax = self.fmax;
+                kpc.xlim = self.xlim;
+                kpc.xlim_dhs = self.xlim_dhs;
             }
-            "--xlim" => {
-                kpc.xlim = args
-                    .next()
-                    .ok_or_else(|| anyhow!("Missing argument: --xlim"))?
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid value type for argument: --xlim"))?;
+            MethodArg::Mie => {
+                kpc.method = KappaMethod::DHS;
+                kpc.fmax = 0.0;
+                kpc.xlim = self.xlim;
+                kpc.xlim_dhs = self.xlim_dhs;
             }
-            "--xlim-dhs" => {
-                kpc.xlim_dhs = args
-                    .next()
-                    .ok_or_else(|| anyhow!("Missing argument: --xlim-dhs"))?
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid value type for argument: --xlim-dhs"))?;
-            }
-            "--mmf" | "--mmf-ss" => {
+            MethodArg::Mmf => {
                 kpc.method = KappaMethod::MMF;
-                if arg == "--mmf-ss" {
-                    kpc.mmf_ss = true;
-                }
-                let next_arg = args.next();
-                if let Some(next_arg) = next_arg {
-                    if let Ok(mmf_a0) = next_arg.parse::<f64>() {
-                        kpc.mmf_a0 = mmf_a0;
-                        if let Some(next_arg) = args.next() {
-                            if let Ok(mmf_struct) = next_arg.parse::<f64>() {
-                                kpc.mmf_struct = mmf_struct;
-                                if let Some(next_arg) = args.next() {
-                                    kpc.mmf_kf = next_arg
-                                        .parse::<f64>()
-                                        .map_err(|_| anyhow!("Unable to parse `mmf_kf`"))?;
-                                } else {
-                                    kpc.mmf_kf = 0.0;
-                                }
-                            } else {
-                                return Err(anyhow!("Unable to parse `mmf_struct`").into());
-                            }
-                        } else {
-                            kpc.mmf_struct = 0.2; // Default is a filling factor of 20%
-                        }
-                    } else {
-                        return Err(anyhow!("Unable to parse `mmf_a0`").into());
+                kpc.mmf_a0 = self.mmf_a0;
+                kpc.mmf_struct = if let Some(df) = self.mmf_df {
+                    if df <= 1.0 || df > 3.0 {
+                        return Err(anyhow!("`--mmf-df` must be in (1, 3]").into());
                     }
+                    df
+                } else if let Some(fill) = self.mmf_fill {
+                    if fill <= 0.0 || fill > 1.0 {
+                        return Err(anyhow!("`--mmf-fill` must be in (0, 1]").into());
+                    }
+                    fill
                 } else {
-                    kpc.mmf_a0 = 0.1;
-                }
+                    0.2
+                };
+                kpc.mmf_kf = self.mmf_kf.unwrap_or(0.0);
+                kpc.mmf_ss = self.mmf_ss;
             }
-            "--cde" => {
+            MethodArg::Cde => {
                 kpc.method = KappaMethod::CDE;
             }
-            // Other options
-            "-o" => {
-                if let Some(next_arg) = args.next() {
-                    kpc.outdir.clone_from(&next_arg);
-                } else {
-                    kpc.outdir = "output".to_string();
-                }
-            }
-            "-s" | "--scat" | "--scatter" => {
-                kpc.write_scatter = true;
-                if let Some(nang) = args.next() {
-                    kpc.nang = nang.parse::<usize>().map_err(|_| {
-                        anyhow!("Unable to parse `nang` argument for -s/--scat/--scatter")
-                    })?;
-                }
-            }
-            "--sp" | "--sparse" => {
-                kpc.write_scatter = true;
-                if let Some(l1) = args.next() {
-                    if let Ok(l1) = l1.parse::<f64>() {
-                        if let Some(l2) = args.next() {
-                            if let Ok(l2) = l2.parse::<f64>() {
-                                kpc.nsparse += 1;
-                                if kpc.nsparse > 10 {
-                                    return Err(anyhow!("Too many sparse files").into());
-                                }
-                                if l1 < l2 {
-                                    kpc.scatlammin[kpc.nsparse - 1] = l1;
-                                    kpc.scatlammax[kpc.nsparse - 1] = l2;
-                                } else {
-                                    kpc.scatlammin[kpc.nsparse - 1] = l2;
-                                    kpc.scatlammax[kpc.nsparse - 1] = l1;
-                                }
-                            } else {
-                                return Err(anyhow!(
-                                    "Parsing error in second argument of --sparse"
-                                )
-                                .into());
-                            }
-                        } else {
-                            // One specific wavelength
-                            kpc.nsparse += 1;
-                            kpc.scatlammin[kpc.nsparse - 1] = l1;
-                        }
-                    } else {
-                        return Err(anyhow!("Parsing error in first argument of --sparse").into());
-                    }
-                } else {
-                    // No arguments
-                    return Err(anyhow!("Missing arguments to --sparse").into());
-                }
-            }
-            "--chop" => {
-                if let Some(chop_angle) = args.next() {
-                    kpc.chop_angle = chop_angle
-                        .parse::<f64>()
-                        .map_err(|_| anyhow!("Unable to parse `chop_angle` argument for --chop"))?;
-                } else {
-                    kpc.chop_angle = 2.0;
-                }
-            }
-            "--radmc" | "--radmc3d" => {
-                todo!()
-            }
-            "--fits" => {
-                kpc.write_fits = true;
-            }
-            "-d" => {
-                kpc.split = true;
-                if let Some(nsub) = args.next() {
-                    kpc.nsubgrains = nsub
-                        .parse::<usize>()
-                        .map_err(|_| anyhow!("Unable to parse `nsub` argument for -d/--split"))?;
-                } else {
-                    kpc.nsubgrains = 1;
-                }
-            }
-            "-w" => {
-                kpc.write_grid = true;
-            }
-            "-b" | "--blend-only" => {
-                kpc.blend_only = true;
-            }
-            // Miscellaneous options
-            "-L" | "--list" => {
-                list_materials();
-                return Ok(kpc);
-            }
-            "-h" => {
-                print_short_help();
-                exit(0);
-            }
-            "--help" => {
-                print_long_help();
-                exit(0);
-            }
-            "-q" | "--quiet" => {
-                todo!()
-            }
-            "-v" | "--version" => {
-                todo!()
-            }
-            // Unknown option
-            _ if arg.starts_with('-') => {
-                println!("Unknown option: {arg}");
-                return Ok(kpc);
-            }
-            // Positional arguments
-            _ => match process_material(&kpc, arg.as_str(), &mut args, MaterialKind::Core) {
-                Ok(material) => kpc.materials.push(material),
-                Err(KappaError::ZeroMassFraction) => {
-                    args.next();
-                }
-                Err(e) => return Err(e),
-            },
         }
-    }
 
-    Ok(kpc)
-}
+        // Angular grid & output
+        kpc.nang = self.nang;
+        kpc.chop_angle = self.chop;
+        kpc.write_scatter = self.scatter || !self.sparse.is_empty();
+        kpc.for_radmc = self.radmc;
+        kpc.write_grid = self.write_grid;
+        kpc.blend_only = self.blend_only;
+        kpc.outdir = self.outdir.to_string_lossy().into_owned();
+        kpc.label = self.label;
+        kpc.quiet = self.quiet;
 
-fn process_grain_size<I>(args: &mut I) -> Result<SizeArg, KappaError>
-where
-    I: Iterator<Item = String>,
-{
-    let amin_str = args
-        .next()
-        .ok_or_else(|| anyhow!("Missing argument: --amin"))?;
-
-    if amin_str.parse::<f64>().is_err() && Path::new(&amin_str).exists() {
-        return Ok(SizeArg::File(amin_str));
-    }
-
-    let mut amin = amin_str
-        .parse::<f64>()
-        .map_err(|_| anyhow!("Invalid value type for argument: --amin"))?;
-
-    let amax_str = args.next();
-    if let Some(amax_str) = amax_str {
-        if let Ok(mut amax) = amax_str.parse::<f64>() {
-            if amax < 0.0 {
-                if amin + amax <= 0.0 {
-                    return Err(anyhow!("Invalid size range: amin + amax <= 0").into());
-                }
-                amin += amax;
-                amax = amin - 2.0 * amax;
-                let apow = 0.0;
-                let na: Option<usize> = None;
-                return Ok(SizeArg::PowerLaw {
-                    amin,
-                    amax: Some(amax),
-                    apow: Some(apow),
-                    na,
-                });
-            }
-            let next_arg = args.next();
-            if let Some(next_arg) = next_arg {
-                if next_arg.contains(':') {
-                    let parts: Vec<&str> = next_arg.split(':').collect();
-                    if parts.len() != 2 {
-                        return Err(
-                            anyhow!("Could not parse centroid size and logarithmic width").into(),
-                        );
-                    }
-                    let amean = parts[0]
-                        .parse::<f64>()
-                        .map_err(|_| anyhow!("Invalid value type for argument `amean`"))?;
-                    let asigma = parts[1]
-                        .parse::<f64>()
-                        .map_err(|_| anyhow!("Invalid value type for argument `asigma`"))?;
-                    let na = args
-                        .next()
-                        .map(|s| {
-                            s.parse::<usize>()
-                                .map_err(|_| anyhow!("Invalid value type for argument `na`"))
-                        })
-                        .transpose()?;
-                    return Ok(SizeArg::LogNormal {
-                        amin,
-                        amax,
-                        amean,
-                        asigma,
-                        na,
-                    });
-                } else if let Ok(apow) = next_arg.parse::<f64>() {
-                    let na = args
-                        .next()
-                        .map(|s| {
-                            s.parse::<usize>()
-                                .map_err(|_| anyhow!("Invalid value type for argument `na`"))
-                        })
-                        .transpose()?;
-                    return Ok(SizeArg::PowerLaw {
-                        amin,
-                        amax: Some(amax),
-                        apow: Some(apow),
-                        na,
-                    });
-                }
-            }
-            Ok(SizeArg::PowerLaw {
-                amin,
-                amax: Some(amax),
-                apow: None,
-                na: None,
-            })
-        } else {
-            Err(anyhow!("Error in parsing amax").into())
+        if let Some(nsub) = self.split {
+            kpc.split = true;
+            kpc.nsubgrains = nsub;
         }
-    } else {
-        let amax = amin;
-        let na = 1;
-        Ok(SizeArg::PowerLaw {
-            amin,
-            amax: Some(amax),
-            apow: None,
-            na: Some(na),
-        })
-    }
-}
 
-fn process_wavelength<I>(args: &mut I) -> Result<WavelengthArg, KappaError>
-where
-    I: Iterator<Item = String>,
-{
-    let lmin_str = args
-        .next()
-        .ok_or_else(|| anyhow!("Missing argument: --lmin"))?;
-
-    if lmin_str.parse::<f64>().is_err() && Path::new(&lmin_str).exists() {
-        return Ok(WavelengthArg::File(lmin_str));
-    }
-
-    let lmin = lmin_str
-        .parse::<f64>()
-        .map_err(|_| anyhow!("Invalid value type for argument: --lmin"))?;
-
-    let lmax_str = args.next();
-    if let Some(lmax_str) = lmax_str {
-        if let Ok(lmax) = lmax_str.parse::<f64>() {
-            let next_arg = args.next();
-            if let Some(next_arg) = next_arg {
-                if let Ok(nlam) = next_arg.parse::<usize>() {
-                    Ok(WavelengthArg::Value {
-                        lmin,
-                        lmax: Some(lmax),
-                        nlam: Some(nlam),
-                    })
-                } else {
-                    Err(anyhow!("Could not parse nlam").into())
-                }
+        for range_spec in &self.sparse {
+            if kpc.nsparse >= kpc.scatlammin.len() {
+                return Err(anyhow!("Too many `--sparse` intervals").into());
+            }
+            let (l1, l2) = if let Some((a, b)) = range_spec.split_once(':') {
+                let v1 = a
+                    .parse::<f64>()
+                    .map_err(|_| anyhow!("Invalid `--sparse` start wavelength: `{a}`"))?;
+                let v2 = b
+                    .parse::<f64>()
+                    .map_err(|_| anyhow!("Invalid `--sparse` end wavelength: `{b}`"))?;
+                if v1 <= v2 { (v1, v2) } else { (v2, v1) }
             } else {
-                let nlam = 300;
-                Ok(WavelengthArg::Value {
-                    lmin,
-                    lmax: Some(lmax),
-                    nlam: Some(nlam),
-                })
+                let v = range_spec
+                    .parse::<f64>()
+                    .map_err(|_| anyhow!("Invalid `--sparse` wavelength: `{range_spec}`"))?;
+                (v, v)
+            };
+            if l1 <= 0.0 || l2 <= 0.0 {
+                return Err(anyhow!("`--sparse` wavelengths must be positive").into());
             }
-        } else {
-            Err(anyhow!("Could not parse lmax").into())
+            let idx = kpc.nsparse;
+            kpc.scatlammin[idx] = l1;
+            kpc.scatlammax[idx] = l2;
+            kpc.nsparse += 1;
         }
-    } else {
-        let lmax = lmin;
-        let nlam = 1;
-        Ok(WavelengthArg::Value {
-            lmin,
-            lmax: Some(lmax),
-            nlam: Some(nlam),
-        })
+
+        Ok(kpc)
     }
 }
 
-fn process_material<I>(
-    kpc: &KappaConfig,
-    material_arg: &str,
-    args: &mut Peekable<I>,
-    material_type: MaterialKind,
-) -> Result<Material, KappaError>
-where
-    I: Iterator<Item = String>,
-{
+/// Parses `<key|file.lnk|n:k:rho>[=mfrac]`. Returns `Ok(None)` if `mfrac == 0.0`.
+fn parse_material_spec(spec: &str, kind: MaterialKind) -> Result<Option<Material>, KappaError> {
+    let (target, mfrac) = if let Some((lhs, rhs)) = spec.rsplit_once('=') {
+        let frac = rhs
+            .parse::<f64>()
+            .map_err(|_| anyhow!("Invalid mass fraction `{rhs}` in material `{spec}`"))?;
+        if frac < 0.0 || !frac.is_finite() {
+            return Err(anyhow!("Mass fraction must be non-negative in `{spec}`").into());
+        }
+        if frac == 0.0 {
+            return Ok(None);
+        }
+        (lhs, frac)
+    } else {
+        (spec, 1.0)
+    };
+
     let mut material = Material {
-        kind: material_type,
+        kind,
+        mfrac,
         ..Default::default()
     };
 
-    if MATERIAL_KEYS.contains(&material_arg) {
-        material.key = material_arg.to_string();
-    } else if Path::new(material_arg)
+    if try_get_lnk_data(target).is_some() {
+        material.key = target.to_string();
+        material.cmd = RefractiveIndexKind::Other;
+    } else if Path::new(target)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("lnk"))
     {
-        // Positional argument is a file path
-        material.key = material_arg.to_string();
-        let rho_in = Option::<f64>::None;
-        let component = read_lnk_file(material_arg, rho_in)?;
-        let l0_slice: &[f64] = &component.l0.to_vec();
-        let n0_slice: &[f64] = &component.n0.to_vec();
-        let k0_slice: &[f64] = &component.k0.to_vec();
-        (material.re, material.im) = regrid_lnk_data(l0_slice, n0_slice, k0_slice, &kpc.lam, true);
-        material.rho = component.rho;
+        material.key = target.to_string();
         material.cmd = RefractiveIndexKind::File;
-    } else if material_arg.contains(':') {
-        // This is n:k:rho format
+    } else if target.contains(':') {
+        let parts: Vec<&str> = target.split(':').collect();
+        if parts.len() != 3 {
+            return Err(
+                anyhow!("Expected `n:k:rho` for constant optical constants, got `{target}`").into(),
+            );
+        }
+        material.n = parts[0]
+            .parse::<f64>()
+            .map_err(|_| anyhow!("Invalid refractive index `n` in `{target}`"))?;
+        material.k = parts[1]
+            .parse::<f64>()
+            .map_err(|_| anyhow!("Invalid extinction coefficient `k` in `{target}`"))?;
+        material.rho = parts[2]
+            .parse::<f64>()
+            .map_err(|_| anyhow!("Invalid density `rho` in `{target}`"))?;
+        if material.rho <= 0.0 {
+            return Err(anyhow!("Material density `rho` must be positive in `{target}`").into());
+        }
+        material.key = target.to_string();
         material.cmd = RefractiveIndexKind::CmdLine;
-        let parts: Vec<&str> = material_arg.split(':').collect();
-        if parts.len() == 3 {
-            material.n = parts[0]
-                .parse::<f64>()
-                .map_err(|_| anyhow!("Invalid value type for argument `n`"))?;
-            material.k = parts[1]
-                .parse::<f64>()
-                .map_err(|_| anyhow!("Invalid value type for argument `k`"))?;
-            material.rho = parts[2]
-                .parse::<f64>()
-                .map_err(|_| anyhow!("Invalid value type for argument `rho`"))?;
-            if material.rho <= 0.0 {
-                eprintln!("Density must be positive");
-                return Err(anyhow!("Density must be positive").into());
-            }
-            material.re = material.n * RVector::ones(kpc.nlam);
-            material.im = material.k * RVector::ones(kpc.nlam);
-        } else {
-            return Err(anyhow!("Invalid material format").into());
-        }
     } else {
-        return Err(anyhow!("Invalid material key").into());
+        return Err(anyhow!(
+            "Unknown material `{target}`. Run `kappa materials` to list built-in keys, or pass a `.lnk` file or `n:k:rho`."
+        )
+        .into());
     }
 
-    // Uniformly check and parse the mass fraction for all material formats
-    if let Some(next_arg) = args.peek() {
-        if let Ok(mfrac) = next_arg.parse::<f64>() {
-            material.mfrac = if mfrac == 0.0 {
-                return Err(KappaError::ZeroMassFraction);
-            } else {
-                mfrac
-            };
-            args.next(); // Consume the mass fraction argument
-        } else {
-            material.mfrac = 1.0;
+    Ok(Some(material))
+}
+
+fn parse_pair(spec: &str, flag: &str) -> Result<(f64, f64), KappaError> {
+    let (lhs, rhs) = spec
+        .split_once(':')
+        .ok_or_else(|| anyhow!("{flag} expects `MEAN:SIGMA`, got `{spec}`"))?;
+    let a = lhs
+        .parse::<f64>()
+        .map_err(|_| anyhow!("Invalid mean in {flag}: `{lhs}`"))?;
+    let b = rhs
+        .parse::<f64>()
+        .map_err(|_| anyhow!("Invalid sigma in {flag}: `{rhs}`"))?;
+    Ok((a, b))
+}
+
+fn inspect_material(key: &str) -> Result<(), KappaError> {
+    let comp = try_get_lnk_data(key).ok_or_else(|| {
+        anyhow!("Unknown material key `{key}`. Run `kappa materials` to list all keys.")
+    })?;
+    println!("{}: {}", "Key".bold(), key.green());
+    println!("{}: {}", "Name".bold(), comp.name);
+    println!("{}: {}", "Class".bold(), comp.class);
+    println!("{}: {}", "State".bold(), comp.state);
+    println!("{}: {:.3} g/cm^3", "Density".bold(), comp.rho);
+    println!(
+        "{}: {:.4e} .. {:.4e} um ({} points)",
+        "Wavelength".bold(),
+        comp.l0[0],
+        comp.l0[comp.size - 1],
+        comp.size
+    );
+    Ok(())
+}
+
+fn list_materials() {
+    println!(
+        "{:<14} {:<10} {:<12} {:>6}  {:>23}  {}",
+        "Key".bold(),
+        "Class".bold(),
+        "State".bold(),
+        "rho".bold(),
+        "lambda [um]".bold(),
+        "Name".bold()
+    );
+    println!("{}", "-".repeat(82));
+    for &key in MATERIAL_KEYS {
+        if let Some(comp) = try_get_lnk_data(key) {
+            println!(
+                "{:<14} {:<10} {:<12} {:>6.2}  {:>10.3e} .. {:<10.3e}  {}",
+                key.green(),
+                comp.class,
+                comp.state,
+                comp.rho,
+                comp.l0[0],
+                comp.l0[comp.size - 1],
+                comp.name
+            );
         }
-    } else {
-        material.mfrac = 1.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use approx::assert_relative_eq;
+    use clap::Parser;
+
+    use crate::opac::{KappaMethod, MaterialKind, RefractiveIndexKind, SizeDistribution};
+
+    use super::{Cli, CliAction};
+
+    #[test]
+    fn default_cli_uses_diana_and_dhs() {
+        let cli = Cli::try_parse_from(["kappa"]).unwrap();
+        let cfg = cli.into_config().unwrap();
+        assert_eq!(cfg.materials.len(), 2);
+        assert_relative_eq!(cfg.pcore, 0.25);
+        assert!(matches!(cfg.method, KappaMethod::DHS));
+        assert_relative_eq!(cfg.fmax, 0.8);
     }
 
-    Ok(material)
-}
+    #[test]
+    fn preset_does_not_wipe_other_flags_and_supports_mantles() {
+        let cli = Cli::try_parse_from([
+            "kappa",
+            "--lam",
+            "10.0",
+            "--method",
+            "mie",
+            "--preset",
+            "diana",
+            "-p",
+            "0.1",
+            "--mantle-porosity",
+            "0.05",
+            "-m",
+            "h2o-w=0.2",
+            "-s",
+            "--radmc",
+            "--label",
+            "custom",
+            "-q",
+        ])
+        .unwrap();
+        let cfg = cli.into_config().unwrap();
+        assert_eq!(cfg.nlam, 1);
+        assert_relative_eq!(cfg.lmin, 10.0);
+        assert_relative_eq!(cfg.fmax, 0.0);
+        assert_relative_eq!(cfg.pcore, 0.1);
+        assert_relative_eq!(cfg.pmantle, 0.05);
+        assert_eq!(cfg.materials.len(), 3);
+        assert_eq!(cfg.materials[2].kind, MaterialKind::Mantle);
+        assert_relative_eq!(cfg.materials[2].mfrac, 0.2);
+        assert!(cfg.write_scatter);
+        assert!(cfg.for_radmc);
+        assert_eq!(cfg.label, "custom");
+        assert!(cfg.quiet);
+    }
 
-fn print_short_help() {
-    // Description
-    print!("{}", "kappa".bold().color(Color::Yellow));
-    print!(" : ");
-    println!("Dust opacities from the command line");
-    println!("        Dominik, Min, Tazaki 2021, https://ascl.net/2104.010, version 1.9.14");
-    println!();
+    #[test]
+    fn constant_optical_constants_and_distributions_and_mmf() {
+        let cli = Cli::try_parse_from([
+            "kappa",
+            "-c",
+            "1.5:0.01:2.5=0.7",
+            "-c",
+            "pyr=0.3",
+            "--amin",
+            "0.5",
+            "--amax",
+            "10.0",
+            "--log-normal",
+            "2.0:0.4",
+            "--lmin",
+            "1.0",
+            "--lmax",
+            "100.0",
+            "--nlam",
+            "12",
+            "--method",
+            "mmf",
+            "--mmf-a0",
+            "0.1",
+            "--mmf-df",
+            "2.2",
+            "--sparse",
+            "5.0",
+            "--sparse",
+            "20.0:40.0",
+        ])
+        .unwrap();
+        let mut cfg = cli.into_config().unwrap();
+        assert_eq!(cfg.materials[0].cmd, RefractiveIndexKind::CmdLine);
+        assert_relative_eq!(cfg.materials[0].n, 1.5);
+        assert_relative_eq!(cfg.materials[0].k, 0.01);
+        assert_relative_eq!(cfg.materials[0].rho, 2.5);
+        assert_eq!(cfg.sizedis, SizeDistribution::LogNormal);
+        assert!(matches!(cfg.method, KappaMethod::MMF));
+        assert_relative_eq!(cfg.mmf_struct, 2.2);
+        assert_eq!(cfg.nsparse, 2);
+        assert!(cfg.write_scatter);
 
-    // Usage
-    print!("{}", "Usage".bold().underline().color(Color::Green));
-    println!(":");
-    println!("  kappa [OPTIONS] [MATERIAL [MFRAC]]...");
-    println!();
+        // Deferred initialization must size CmdLine arrays to nlam = 12 without panicking
+        cfg.prepare_inputs().unwrap();
+        cfg.initialize().unwrap();
+        assert_eq!(cfg.materials[0].re.len(), 12);
+    }
 
-    // Arguments
-    print!("{}", "Arguments".bold().underline().color(Color::Cyan));
-    println!(":");
-    print!("{:<25}", "  <MATERIAL> [MFRAC]...");
-    println!("Specify materials. Example: c-gra 0.5 c-z 0.3");
-    println!();
+    #[test]
+    fn split_optional_value_and_conflicts_and_subcommand() {
+        // --split without argument defaults to 5
+        let c1 = Cli::try_parse_from(["kappa", "--split"]).unwrap();
+        let cfg1 = c1.into_config().unwrap();
+        assert!(cfg1.split);
+        assert_eq!(cfg1.nsubgrains, 5);
 
-    // Options
-    print!("{}", "Options".bold().underline().color(Color::Blue));
-    println!(":");
+        // --split with explicit value
+        let c2 = Cli::try_parse_from(["kappa", "--split", "9"]).unwrap();
+        let cfg2 = c2.into_config().unwrap();
+        assert!(cfg2.split);
+        assert_eq!(cfg2.nsubgrains, 9);
 
-    // General options (grain composition)
-    print!("{}", "GRAIN COMPOSITION".color(Color::BrightMagenta));
-    println!(":");
+        // Conflicting flags rejected by clap
+        assert!(Cli::try_parse_from(["kappa", "--mmf-df", "2.0", "--mmf-fill", "0.2"]).is_err());
+        assert!(
+            Cli::try_parse_from(["kappa", "--log-normal", "1:0.2", "--normal", "1:0.2"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["kappa", "--unknown-flag"]).is_err());
 
-    println!("{}", "  -c".bold().to_string() + " <MATERIAL> [MFRAC]...");
-    println!("      Specify a material to include in the core, with its mass fraction");
-    println!("      (default: 1.0)");
-
-    println!("{}", "  -m".bold().to_string() + " <MATERIAL> [MFRAC]...");
-    println!("      Specify a material to include in the mantle, with its mass fraction");
-    println!("      (default: 1.0)");
-    println!(
-        "{}",
-        "  -p".bold().to_string() + " <CORE_POROSITY> [MANTLE_POROSITY]..."
-    );
-    println!("      Specify core and mantle porosities (default: 0.0)");
-    println!("{}", "  --diana".bold());
-    println!("      Use the DIANA composition (Woitke et al. 2016)");
-    println!("{}", "  --dsharp".bold());
-    println!("      Use the DSHARP composition (Birnstiel et al. 2018)");
-    println!("{}", "  --dsharp-no-ice".bold());
-    println!("      Use the DSHARP composition without ice");
-    println!();
-
-    // Grain geometry and computational method options
-    print!(
-        "{}",
-        "GRAIN GEOMETRY AND COMPUTATIONAL METHOD".color(Color::BrightMagenta)
-    );
-    println!(":");
-    println!("{}", "  --dhs".bold().to_string() + " [FMAX]");
-    println!("      Use the Distribution of Hollow Spheres (DHS) approach to model deviations");
-    println!(
-        "{}",
-        "  --mmf".bold().to_string() + " [A0 [DFRAC-OR-FILL [KF]]]"
-    );
-    println!("      Use the Modified Mean Field (MMF) theory from Tazaki & Tanaka (2017)");
-    println!("{}", "  --mie".bold());
-    println!("      Do a standard Mie calculation for perfect spheres");
-    println!("      Equivalent to --dhs 0.0");
-    println!("{}", "  --cde".bold());
-    println!(
-        "      Compute Continuous Distribution of Ellipsoids (CDE) opacities in the Rayleigh limit"
-    );
-    println!();
-
-    // Grain size distribution options
-    print!("{}", "GRAIN SIZE DISTRIBUTION".color(Color::BrightMagenta));
-    println!(":");
-    println!(
-        "{}",
-        "  -a".bold().to_string() + " <AMIN> [AMAX [APOW [NA]]]"
-    );
-    println!("      Specify a power-law grain size distribution");
-    println!(
-        "{}",
-        "  -a".bold().to_string() + " <AMIN AMAX AMEAN:ASIG> [NA]"
-    );
-    println!("      Specify a [log-]normal grain size distribution");
-    println!("{}", "  -a".bold().to_string() + " <FILE>");
-    println!("      Read grain size distribution from a file");
-    println!("{}", "  --amin".bold().to_string() + " <AMIN>");
-    println!("      Override minimum grain size");
-    println!("{}", "  --amax".bold().to_string() + " <AMAX>");
-    println!("      Override maximum grain size");
-    println!("{}", "  --amean".bold().to_string() + " <AMEAN>");
-    println!("      Override centroid size");
-    println!("{}", "  --asig".bold().to_string() + " <ASIG>");
-    println!("      Override logarithmic width");
-    println!("{}", "  --apow".bold().to_string() + " <APOW>");
-    println!("      Override power-law index");
-    println!("{}", "  --na".bold().to_string() + " <NA>");
-    println!("      Override number of size bins");
-    println!();
-
-    // Wavelength options
-    print!("{}", "WAVELENGTH GRID".color(Color::BrightMagenta));
-    println!(":");
-    println!("{}", "  -l".bold().to_string() + " <LMIN> [LMAX [NLAM]]");
-    println!("      Specify a wavelength grid");
-    println!("{}", "  -l".bold().to_string() + " <FILE>");
-    println!("      Read wavelength grid from a file");
-    println!("{}", "  --lmin".bold().to_string() + " <LMIN>");
-    println!("      Override minimum wavelength");
-    println!("{}", "  --lmax".bold().to_string() + " <LMAX>");
-    println!("      Override maximum wavelength");
-    println!("{}", "  --nlam".bold().to_string() + " <NLAM>");
-    println!("      Override number of wavelength points");
-    println!();
-
-    // Output options
-    print!("{}", "OUTPUT".color(Color::BrightMagenta));
-    println!(":");
-    println!("{}", "  -o".bold().to_string() + " [DIR]");
-    println!("      Write output to a directory (default: current directory)");
-    println!("{}", "  -s".bold().to_string() + " [NANG]");
-    println!("      Include scattering matrix in the output");
-    println!("{}", "  -d".bold().to_string() + " [NSUB]");
-    println!("      Divide computation upto into n_a parts");
-    println!("{}", "  --chop".bold().to_string() + " [NDEG]");
-    println!("      Cap the first NDEG degrees of the forward scattering peak");
-    println!("{}", "  --fits".bold());
-    println!("      Write output in FITS format");
-    println!("{}", "  --radmc".bold().to_string() + " [LABEL]");
-    println!("      Write output in RADMC-3D format");
-    println!("{}", "  -w".bold());
-    println!("      Create files on which kappa can operate");
-    println!();
-
-    // Miscellaneous options
-    print!("{}", "MISCELLANEOUS".color(Color::BrightMagenta));
-    println!(":");
-    println!("{}", "  -L, --list".bold());
-    println!("      List built-in materials");
-    println!("{}", "  -h, --help".bold());
-    println!("      Print this help message");
-    println!("{}", "  -q, --quiet".bold());
-    println!("      Quiet mode");
-    println!("{}", "  -v, --version".bold());
-    println!("      kappa version");
-}
-
-fn print_long_help() {
-    // Description
-    print!("{}", "kappa".bold().color(Color::Yellow));
-    print!(" : ");
-    println!("Dust opacities from the command line");
-    println!("        Dominik, Min, Tazaki 2021, https://ascl.net/2104.010, version 1.9.14");
-    println!();
-
-    // Usage
-    print!("{}", "Usage".bold().underline().color(Color::Green));
-    println!(":");
-    println!("  kappa [OPTIONS] [MATERIAL [MFRAC]]...");
-    println!();
-
-    // Arguments
-    print!("{}", "Arguments".bold().underline().color(Color::Cyan));
-    println!(":");
-    println!("{:<25}", "  <MATERIAL> [MFRAC]...");
-    println!();
-    println!("Specify a material to include in the grain. MATERIAL can be the key for a builtin");
-    println!("material, the path to an lnk file, or colon-separated numbers `n:k:rho`. MFRAC is");
-    println!("the mass fraction (default 1.0) of the material. You can give up to 20 materials");
-    println!("to build up the grain. Mass fractions do not have to add up to one, they will be");
-    println!("renormalized. All materials will be mixed together using the Bruggeman rule, and");
-    println!("vacuum can be added through the porosity.");
-    println!();
-    println!("`-c` in front of each material is optional.");
-
-    println!();
-
-    // Options
-    print!("{}", "Options".bold().underline().color(Color::Blue));
-    println!(":");
-
-    // General options (grain composition)
-    print!("{}", "GRAIN COMPOSITION".color(Color::BrightMagenta));
-    println!(":");
-
-    println!("{}", "  -c".bold().to_string() + " <MATERIAL> [MFRAC]...");
-    println!("      Specify a material to include in the core, with its mass fraction");
-    println!();
-    println!("{}", "      (default: 1.0)".italic());
-    println!();
-    println!("{}", "  -m".bold().to_string() + " <MATERIAL> [MFRAC]...");
-    println!("      Specify a material to include in the mantle, with its mass fraction");
-    println!("{}", "      (default: 1.0)".italic());
-    println!(
-        "{}",
-        "  -p".bold().to_string() + " <CORE_POROSITY> [MANTLE_POROSITY]..."
-    );
-    println!("      Specify core and mantle porosities (default: 0.0)");
-    println!("{}", "  --diana".bold());
-    println!("      Use the DIANA composition (Woitke et al. 2016)");
-    println!("{}", "  --dsharp".bold());
-    println!("      Use the DSHARP composition (Birnstiel et al. 2018)");
-    println!("{}", "  --dsharp-no-ice".bold());
-    println!("      Use the DSHARP composition without ice");
-    println!();
-
-    // Grain geometry and computational method options
-    print!(
-        "{}",
-        "GRAIN GEOMETRY AND COMPUTATIONAL METHOD".color(Color::BrightMagenta)
-    );
-    println!(":");
-    println!("{}", "  --dhs".bold().to_string() + " [FMAX]");
-    println!("      Use the Distribution of Hollow Spheres (DHS) approach to model deviations");
-    println!(
-        "{}",
-        "  --mmf".bold().to_string() + " [A0 [DFRAC-OR-FILL [KF]]]"
-    );
-    println!("      Use the Modified Mean Field (MMF) theory from Tazaki & Tanaka (2017)");
-    println!("{}", "  --mie".bold());
-    println!("      Do a standard Mie calculation for perfect spheres");
-    println!("      Equivalent to --dhs 0.0");
-    println!("{}", "  --cde".bold());
-    println!(
-        "      Compute Continuous Distribution of Ellipsoids (CDE) opacities in the Rayleigh limit"
-    );
-    println!();
-
-    // Grain size distribution options
-    print!("{}", "GRAIN SIZE DISTRIBUTION".color(Color::BrightMagenta));
-    println!(":");
-    println!(
-        "{}",
-        "  -a".bold().to_string() + " <AMIN> [AMAX [APOW [NA]]]"
-    );
-    println!("      Specify a power-law grain size distribution");
-    println!(
-        "{}",
-        "  -a".bold().to_string() + " <AMIN AMAX AMEAN:ASIG> [NA]"
-    );
-    println!("      Specify a [log-]normal grain size distribution");
-    println!("{}", "  -a".bold().to_string() + " <FILE>");
-    println!("      Read grain size distribution from a file");
-    println!("{}", "  --amin".bold().to_string() + " <AMIN>");
-    println!("      Override minimum grain size");
-    println!("{}", "  --amax".bold().to_string() + " <AMAX>");
-    println!("      Override maximum grain size");
-    println!("{}", "  --amean".bold().to_string() + " <AMEAN>");
-    println!("      Override centroid size");
-    println!("{}", "  --asig".bold().to_string() + " <ASIG>");
-    println!("      Override logarithmic width");
-    println!("{}", "  --apow".bold().to_string() + " <APOW>");
-    println!("      Override power-law index");
-    println!("{}", "  --na".bold().to_string() + " <NA>");
-    println!("      Override number of size bins");
-    println!();
-
-    // Wavelength options
-    print!("{}", "WAVELENGTH GRID".color(Color::BrightMagenta));
-    println!(":");
-    println!("{}", "  -l".bold().to_string() + " <LMIN> [LMAX [NLAM]]");
-    println!("      Specify a wavelength grid");
-    println!("{}", "  -l".bold().to_string() + " <FILE>");
-    println!("      Read wavelength grid from a file");
-    println!("{}", "  --lmin".bold().to_string() + " <LMIN>");
-    println!("      Override minimum wavelength");
-    println!("{}", "  --lmax".bold().to_string() + " <LMAX>");
-    println!("      Override maximum wavelength");
-    println!("{}", "  --nlam".bold().to_string() + " <NLAM>");
-    println!("      Override number of wavelength points");
-    println!();
-
-    // Output options
-    print!("{}", "OUTPUT".color(Color::BrightMagenta));
-    println!(":");
-    println!("{}", "  -o".bold().to_string() + " [DIR]");
-    println!("      Write output to a directory (default: current directory)");
-    println!("{}", "  -s".bold().to_string() + " [NANG]");
-    println!("      Include scattering matrix in the output");
-    println!("{}", "  -d".bold().to_string() + " [NSUB]");
-    println!("      Divide computation upto into n_a parts");
-    println!("{}", "  --chop".bold().to_string() + " [NDEG]");
-    println!("      Cap the first NDEG degrees of the forward scattering peak");
-    println!("{}", "  --fits".bold());
-    println!("      Write output in FITS format");
-    println!("{}", "  --radmc".bold().to_string() + " [LABEL]");
-    println!("      Write output in RADMC-3D format");
-    println!("{}", "  -w".bold());
-    println!("      Create files on which kappa can operate");
-    println!();
-
-    // Miscellaneous options
-    print!("{}", "MISCELLANEOUS".color(Color::BrightMagenta));
-    println!(":");
-    println!("{}", "  -L, --list".bold());
-    println!("      List built-in materials");
-    println!("{}", "  -h, --help".bold());
-    println!("      Print this help message");
-    println!("{}", "  -q, --quiet".bold());
-    println!("      Quiet mode");
-    println!("{}", "  -v, --version".bold());
-    println!("      kappa version");
-}
-
-pub fn list_materials() {
-    println!(
-        ":===================== *** LIST OF BUILT-IN MATERIALS *** =====================:\n\
-         : amorph.pyroxenes  pyr-mg100/95/80/70/60/50/40                                :\n\
-         : amorph.olivines   ol-mg100/40                        (Dorschner95,Henning96) :\n\
-         : cryst. pyr/ol     pyr-c-mg96 ol-c-mg100/95/00      (Jäger96,Suto06,Fabian01) :\n\
-         : other silicates   astrosil                                        (Draine03) :\n\
-         : amorphous carbon  c-z    c-p                           (Zubko96,Preibisch93) :\n\
-         : graphite,special  c-gra  c-nano  c-org                (Dra.03,Mut.04,Hen.96) :\n\
-         : quartz,corundum   sio2   cor-c                          (Kitamura07,Koike95) :\n\
-         : iron/sulfide      fe-c   fes                                     (Henning96) :\n\
-         : carbides          sic                                             (Draine93) :\n\
-         : water ice         h2o-w  h2o-a                          (Warren08,Hudgins93) :\n\
-         : other ices        co2-w  nh3-m                       (Warren86,Martonchik83) :\n\
-         :                   co-a   co2-a/c ch4-a/c ch3oh-a/c   (Palumbo06,Gerakines20) :\n\
-         :                                                                              :\n\
-         : *** ABBREVIATIONS AND GENERIC KEYS FOR QUICK ACCESS ***                      :\n\
-         : pyr  -> pyr-mg70     c    -> c-z         iron -> fe-c      h2o  -> h2o-w     :\n\
-         : ol   -> ol-mg50      gra  -> c-gra       qua  -> sio2      co   -> co-a      :\n\
-         : ens  -> pyr-c-mg96   org  -> c-org       cor  -> cor-c     co2  -> co2-w     :\n\
-         : for  -> ol-c-mg100                       tro  -> fes       nh3  -> nh3-m     :\n\
-         : fay  -> ol-c-mg00                                                            :\n\
-         :==============================================================================:",
-    );
+        // Materials subcommand completes directly without running opacities
+        let sub = Cli::try_parse_from(["kappa", "materials", "pyr"]).unwrap();
+        assert!(matches!(sub.into_action().unwrap(), CliAction::Done));
+    }
 }

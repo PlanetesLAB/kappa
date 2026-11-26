@@ -6,7 +6,8 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 approx = "0.5.1"
-colored = "3.1.1"
+clap = { version = "4", features = ["derive"], optional = true }
+colored = { version = "3.1.1", optional = true }
 ndarray = "0.17.2"
 num-complex = "0.4.6"
 rayon = "1.12.0"
@@ -16,8 +17,14 @@ planetes-ext = { git = "https://github.com/PlanetesLAB/planetes-ext", tag = "v1.
 serde = { version = "1.0.229", features = ["derive"], optional = true }
 
 [features]
-default = []
+default = ["cli"]
+cli = ["dep:clap", "dep:colored"]
 serde = ["dep:serde"]
+
+[[bin]]
+name = "kappa"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [profile.release]
 lto = true        # Link-time optimization
