@@ -18637,7 +18637,7 @@ static K0_CH4_A: &[f64; 906] = &[
 ];
 
 pub static CH4_A: StaticComponent = StaticComponent {
-    name: "Methance ice",
+    name: "Methane ice",
     class: "ice",
     state: "amorphous",
     rho: 0.47,
@@ -30337,7 +30337,7 @@ static K0_CO2_W: &[f64; 945] = &[
 ];
 
 pub static CO2_W: StaticComponent = StaticComponent {
-    name: "Dry ice (water)",
+    name: "Dry ice (Warren)",
     class: "ice",
     state: "crystalline",
     rho: 1.6,
@@ -73538,7 +73538,7 @@ pub static PYR_MG80: StaticComponent = StaticComponent {
     name: "Pyroxene",
     class: "Silicates",
     state: "Amorphous",
-    rho: 2.09,
+    rho: 2.90,
     size: 109,
     wavelengths: L0_PYR_MG80,
     n: N0_PYR_MG80,

@@ -1254,12 +1254,6 @@ pub mod special {
 
         hg
     }
-
-    /// Placeholder for a future geometric-optics limit helper (currently
-    /// unimplemented and unconditionally panics with `todo!()`).
-    pub fn optic_limit() {
-        todo!()
-    }
 }
 
 /// Interpolates and extrapolates tabulated optical constants $(n(\lambda), k(\lambda))$
