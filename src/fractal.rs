@@ -1,7 +1,16 @@
-//! Light scattering properties of randomly oriented fractal dust aggregates.
+//! Light scattering by randomly oriented fractal dust aggregates.
 //!
-//! Implements Rayleigh-Gans-Debye, Mean Field, and Modified Mean Field theories
-//! following Tazaki & Tanaka (2018).
+//! Implements Rayleigh-Gans-Debye (RGD), Mean Field (MF), and Modified Mean
+//! Field (MMF) theories following
+//! [Tazaki et al. (2016)](https://ui.adsabs.harvard.edu/abs/2016ApJ...823...70T/abstract),
+//! [Botet et al. (1997)](https://ui.adsabs.harvard.edu/abs/1997ApOpt..36.8791B/abstract),
+//! and [Tazaki & Tanaka (2018)](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract).
+//!
+//! Refractive indices follow the $e^{-i \omega t}$ harmonic time convention
+//! ($m = n + i k$ with $k \ge 0$), and the off-diagonal circular-polarization
+//! element $S_{34} = \operatorname{Im}(S_{1} S_{2}^{*})$ matches the
+//! [Hovenier et al. (2004)](https://ui.adsabs.harvard.edu/abs/2004ASSL..318.....H/abstract)
+//! sign convention.
 
 use std::f64::consts::PI;
 use std::sync::Once;
@@ -22,18 +31,39 @@ use crate::utils::legendre;
 use crate::utils::linalg;
 use crate::utils::special;
 
+/// Input parameters for light scattering by a randomly oriented fractal dust
+/// aggregate.
 pub struct FractalConfig {
+    /// Light-scattering approximation ([`FractalSolver`]).
     pub solver: FractalSolver,
+    /// Cutoff function for the two-point monomer correlation function
+    /// ([`FractalCutoff`]).
     pub cutoff: FractalCutoff,
+    /// Aggregate geometric cross-section model used by MMF absorption
+    /// ([`FractalGeometry`]).
     pub geometry: FractalGeometry,
+    /// Number of angular nodes on $[0, \pi/2]$ (must be $\ge 2$); the output
+    /// scattering grid spans $[0, \pi]$ with $2 N_{\theta} - 1$ uniform nodes.
     pub n_angles: usize,
+    /// Number of spherical monomers $N \ge 1$ in the aggregate.
     pub n_monomers: f64,
+    /// Radius of an individual monomer $R_{0}$ (same length unit as
+    /// `wavelength`, typically $\mu\mathrm{m}$).
     pub monomer_radius: f64,
+    /// Fractal dimension $d_{f} \in [1, 3]$ in
+    /// $N = k_{0} (R_{g} / R_{0})^{d_{f}}$.
     pub fractal_dim: f64,
+    /// Fractal prefactor $k_{0}$ in $N = k_{0} (R_{g} / R_{0})^{d_{f}}$.
     pub prefactor: f64,
+    /// Incident wavelength $\lambda$ (same length unit as `monomer_radius`,
+    /// typically $\mu\mathrm{m}$).
     pub wavelength: f64,
+    /// Complex refractive index of the monomer $m = n + i k$ ($k \ge 0$).
     pub refractive_index: Complex64,
+    /// Default Gauss-Legendre quadrature order ($400$; currently informational).
     pub gauss_leg_grid_size: usize,
+    /// Default multipole truncation warning threshold ($500$; currently
+    /// informational).
     pub truncation_order: usize,
 }
 
@@ -57,105 +87,120 @@ impl Default for FractalConfig {
 }
 
 impl FractalConfig {
+    /// Creates a [`FractalConfig`] populated with [`Default::default`].
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 }
 
+/// Output cross sections, asymmetry parameter, and scattering matrix elements
+/// from [`mean_scattering`].
 pub struct FractalResult {
+    /// Extinction cross section $C_{\mathrm{ext}}$ (in squared units of
+    /// `wavelength`).
     pub c_ext: f64,
+    /// Scattering cross section $C_{\mathrm{sca}}$ (in squared units of
+    /// `wavelength`).
     pub c_sca: f64,
+    /// Absorption cross section $C_{\mathrm{abs}}$ (in squared units of
+    /// `wavelength`).
     pub c_abs: f64,
+    /// Scattering asymmetry parameter $g = \langle \cos\theta \rangle$.
     pub g: f64,
+    /// Aggregate phase-shift diagnostic
+    /// $\Delta\phi = \max(\Delta\phi_{c}, \Delta\phi_{0})$
+    /// ([Tazaki & Tanaka 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract),
+    /// Eq. 9); scattering matrix accuracy is guaranteed when $\Delta\phi < 1$.
     pub phase_shift: f64,
+    /// Scattering angles $\theta \in [0, \pi]$ in radians (length
+    /// $2 N_{\theta} - 1$).
     pub angles: RVector,
+    /// Unnormalized Mueller matrix elements $[S_{11}, S_{12}, S_{33}, S_{34}]$
+    /// of shape `(2 * n_angles - 1, 4)`; normalized
+    /// [Hovenier et al. (2004)](https://ui.adsabs.harvard.edu/abs/2004ASSL..318.....H/abstract)
+    /// elements are $F_{ij} = \frac{4\pi}{k^{2} C_{\mathrm{sca}}} S_{ij}$.
     pub scattering_matrix: RMatrix,
+    /// Phase function $P(\theta) = S_{11}(\theta) / (k^{2} C_{\mathrm{sca}})$
+    /// normalized so that
+    /// $2\pi \int_{0}^{\pi} P(\theta)\sin\theta\thinspace\mathrm{d}\theta = 1$.
     pub phase_function: RVector,
 }
 
+/// Light-scattering approximation for fractal aggregates.
 pub enum FractalSolver {
+    /// Rayleigh-Gans-Debye theory
+    /// ([Tazaki et al. 2016](https://ui.adsabs.harvard.edu/abs/2016ApJ...823...70T/abstract));
+    /// accurate when the aggregate phase shift $\Delta\phi \lesssim 1$.
     RayleighGansDebye,
+    /// Mean Field theory
+    /// ([Botet et al. 1997](https://ui.adsabs.harvard.edu/abs/1997ApOpt..36.8791B/abstract));
+    /// $C_{\mathrm{ext}}$ is valid at arbitrary $\Delta\phi$, while other
+    /// outputs are reliable for $\Delta\phi \lesssim 1$.
     MeanField,
+    /// Modified Mean Field theory
+    /// ([Tazaki & Tanaka 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract));
+    /// extends $C_{\mathrm{abs}}$ and $C_{\mathrm{sca}}$ beyond
+    /// $\Delta\phi \sim 1$ via an optical-depth absorption correction.
     ModifiedMeanField,
 }
 
+/// Cutoff function $f_{c}(r / R_{g})$ for the two-point monomer correlation
+/// function.
 pub enum FractalCutoff {
+    /// Gaussian cutoff
+    /// ([Tazaki et al. 2016](https://ui.adsabs.harvard.edu/abs/2016ApJ...823...70T/abstract));
+    /// recommended for numerical stability and accuracy.
     Gaussian,
+    /// Exponential cutoff
+    /// ([Berry & Percival 1986](https://doi.org/10.1080/713821987)).
     Exponential,
+    /// Fractal-dimension-dependent cutoff
+    /// ([Botet et al. 1995](https://ui.adsabs.harvard.edu/abs/1995JPhA...28..297B/abstract)).
     FractalDimension,
 }
 
+/// Geometric cross-section model $G$ used for the MMF optical-depth absorption
+/// correction in [`FractalSolver::ModifiedMeanField`].
 #[derive(PartialEq)]
 pub enum FractalGeometry {
+    /// Characteristic-sphere area $G = \pi R_{c}^{2}$ with
+    /// $R_{c} = \sqrt{5/3}\thinspace R_{g}$.
     Circular,
+    /// Interpolation formula of
+    /// [Okuzumi et al. (2009)](https://ui.adsabs.harvard.edu/abs/2009ApJ...707.1247O/abstract).
     Okuzumi,
+    /// Statistical monomer-overlap model of
+    /// [Tazaki (2021)](https://ui.adsabs.harvard.edu/abs/2021MNRAS.504.2811T/abstract)
+    /// via [`crate::geofractal::get_geometric_cross_section_tazaki`].
     Tazaki,
 }
 
-/// Computes light scattering properties of randomly oriented
-/// fractal dust aggregates by means of the modified mean field theory developed
-/// in [Tazaki & Tanaka (2018)](https://iopscience.iop.org/article/10.3847/1538-4357/aac32d/meta). This code is also capable of computing the light
-/// scattering solution based on the Rayleigh-Gans-Debye theory and the Mean field
-/// theory.
+/// Computes light-scattering cross sections, asymmetry parameter, and Mueller
+/// scattering matrix elements of a randomly oriented fractal dust aggregate.
 ///
-/// # Arguments
-/// - `iqsca`:  Method switch for the light scatteing solver
-///     - `iqsca = 1`: Rayleigh-Gans-Debye theory
-///     - `iqsca = 2`: Mean field theory
-///     - `iqsca = 3`: Modified mean-field theory
-/// - `iqcor`: Switch for the two-point correction function
-///     - `iqcor = 1`: Gaussian cut-off
-///     - `iqcor = 2`: Exponential cut-off
-///     - `iqcor = 3`: Fractal dimension cut-off
-/// - `iqgeo`: Switch for the geometric cross-section
-///     - `iqgeo = 1`: `π * rc^2`, where `rc` is the characteristic radius.
-///     - `iqgeo = 2`: [Okuzumi et al. (2009)](https://iopscience.iop.org/article/10.1088/0004-637X/698/2/1122/meta)
-///     - `iqgeo = 3`: [Tazaki (2021)](https://ui.adsabs.harvard.edu/abs/2021MNRAS.504.2811T/abstract)
-/// - `nang`: Number of angles `(0, π/2)` for the scattering phase function.
-/// - `pn`: Number of monomers in the aggregate.
-/// - `r0`: Monomer radius.
-/// - `df`: Fractal dimension.
-/// - `k`: Prefactor for the fractal dimension.
-/// - `lmd`: Wavelength of the incident light.
-/// - `refrel`: Complex Refractive index of the monomer.
-///
-/// # Notes
-/// - For `iqsca = 1`:
-///   all outputs would be physically reasonable for the phase shift `< ~1`.
-///
-/// - For `iqsca = 2`:
-///   The extinction cross section would be calculated without limitation.
-///   However, the other outputs would be reliable for the phase shift < ~1.
-///
-/// - For `iqsca = 3`:
-///   The extinction cross section would be calculated without limitation.
-///   Scattering and absorption cross sections could be calculated
-///   for the phase shift > 1, however too large phase shift may
-///   cause some problem.
-///   The asymmetry parameter and the sattering matrix elements would be
-///   reliable for the phase shift < ~1.
-///
-/// - For the two-point correlation function, it is suggested to use `iqcor = 1` because
-///   it is numerically stable and is likely to reproduce optical properties
-///   of fractal aggregates.
-///
-/// # References
-/// - `iqsca = 1`; `iqcor = 1`: [Tazaki et al. (2016), ApJ, 823, 70](https://iopscience.iop.org/article/10.3847/0004-637X/823/2/70/meta)
-/// - `iqsca = 2`: [Botet et al. (1997), ApOpt, 36, 8791](https://opg.optica.org/abstract.cfm?uri=ao-36-33-8791)
-/// - `iqsca = 3`: [Tazaki & Tanaka (2018), ApJ, 860, 79](https://iopscience.iop.org/article/10.3847/1538-4357/aac32d/meta)
-/// - `iqcor = 2`: [Berry & Percival (1986), AcOpt, 33, 577](https://www.tandfonline.com/doi/abs/10.1080/713821987)
-/// - `iqcor = 3`: [Botet et al. (1995), JPhA, 28, 297](https://iopscience.iop.org/article/10.1088/0305-4470/28/2/008)
-/// - `iqgeo = 2`: [Okuzumi et al. (2009), ApJ, 707, 1247](https://iopscience.iop.org/article/10.1088/0004-637X/698/2/1122/meta)
-/// - `iqgeo = 3`: [Tazaki (2021), MNRAS, 504, 2811](https://ui.adsabs.harvard.edu/abs/2021MNRAS.504.2811T/abstract)
+/// Evaluates the gyration radius $R_{g} = R_{0}(N/k_{0})^{1/d_{f}}$,
+/// characteristic radius $R_{c} = \sqrt{5/3}\thinspace R_{g}$, and phase-shift
+/// diagnostic $\Delta\phi = \max(2 k R_{c}|m_{\mathrm{eff}} - 1|, 2 k R_{0}|m - 1|)$
+/// ([Tazaki & Tanaka 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract),
+/// Eq. 9). Monomer Lorenz-Mie coefficients are solved directly for
+/// [`FractalSolver::RayleighGansDebye`] or coupled through the mean-field
+/// linear system for [`FractalSolver::MeanField`] and
+/// [`FractalSolver::ModifiedMeanField`], then combined with the coherent
+/// aggregate factor $N [1 + (N - 1) S(q)]$ where
+/// $q = 2 k \sin(\theta / 2)$. Under [`FractalSolver::ModifiedMeanField`],
+/// absorption is corrected for internal optical depth
+/// $\tau = C_{\mathrm{abs,RGD}} / G$ via
+/// $C_{\mathrm{abs}} = \max[G(1 - e^{-\tau}), C_{\mathrm{ext}} - C_{\mathrm{sca}}]$
+/// and $C_{\mathrm{sca}} = C_{\mathrm{ext}} - C_{\mathrm{abs}}$.
 ///
 /// # Errors
-/// - `LowScatteringAngleResolution`: The number of angles for the scattering phase function is too small (<=1).
-/// - `NotEnoughMonomers`: The number of monomers in the aggregate is too small (<1).
-/// - `ExceedsMaxFractalDimension`: The fractal dimension exceeds the maximum value (3.0).
-/// - `IllegalMatrixElement`: The scattering matrix element is negative, which is unphysical.
-/// - `UnnormalizedPhaseFunction`: The phase function is not normalized, which is unphysical.
-/// - `MieOverflow`: The truncation order for the Lorenz-Mie coefficients exceeds the maximum value (150,000).
+/// Returns an error if:
+/// - `n_angles <= 1`, `n_monomers < 1`, or `fractal_dim > 3`;
+/// - monomer Lorenz-Mie truncation order exceeds $1.5 \times 10^{5}$;
+/// - the Legendre/Bessel integration or mean-field linear system fails;
+/// - any $S_{11}(\theta) < 0$ or the integrated phase-function normalization
+///   deviates from $1$ by more than $10^{-3}$.
 #[allow(clippy::similar_names)]
 pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
     let k = 2.0 * PI / fracc.wavelength;
@@ -446,20 +491,11 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
     })
 }
 
-/// This function finds effective refractive index of an aggregates
-/// by using Maxwell-Garnett mixing rule.
-///
-/// # Arguments
-/// - `refrel`: Complex refractive index of the monomer.
-/// - `f1`: Volume filling factor of the first material.
-///
-/// # Returns
-/// - Effective refractive index of the aggregates.
-///
-/// # Notes
-/// - `eps_1` : Dielectric constant of the first material.
-/// - `eps_2` : Dielectric constant of vacuum.
-/// - `f1` : Volume filling factor of the first material.
+/// Computes the effective refractive index $m_{\mathrm{eff}} = \sqrt{\epsilon_{\mathrm{eff}}}$
+/// of monomer inclusions (refractive index `refrel`, volume filling factor `f1`)
+/// embedded in vacuum ($\epsilon_{2} = 1$) via the Maxwell Garnett (1904,
+/// *Phil. Trans. R. Soc. A* 203, 385) mixing rule:
+/// $$\epsilon_{\mathrm{eff}} = \epsilon_{2} \frac{2 f_{1} (\epsilon_{1} - \epsilon_{2}) + \epsilon_{1} + 2 \epsilon_{2}}{\epsilon_{1} + 2 \epsilon_{2} - f_{1} (\epsilon_{1} - \epsilon_{2})}.$$
 fn maxwell_garnett_mixing(refrel: Complex64, f1: f64) -> Complex64 {
     let eps_1 = refrel * refrel;
     let eps_2 = Complex::new(1.0, 0.0);
@@ -469,45 +505,18 @@ fn maxwell_garnett_mixing(refrel: Complex64, f1: f64) -> Complex64 {
     mg.sqrt()
 }
 
-/// This subroutine performs integration of the static structure factor by
-/// Botet et al. (1995) based on  `df`-dependent cut-off function for two-point
-/// correlation function.
-/// The statis structure factor `S(q)` is given by
+/// Evaluates the static structure factor $S(q)$ for the
+/// [`FractalCutoff::FractalDimension`] cutoff model of
+/// [Botet et al. (1995)](https://ui.adsabs.harvard.edu/abs/1995JPhA...28..297B/abstract):
+/// $$S(q) = \frac{c \thinspace d_{f}}{q R_{g}} \int_{0}^{x_{\max}} x^{d_{f} - 2} \sin(q R_{g} x) \thinspace e^{-c x^{d_{f}}} \thinspace \mathrm{d}x,$$
+/// where $x = r / R_{g}$, $c = 0.5$, and $x_{\max} = (\eta / c)^{1/d_{f}}$ with
+/// $\eta = 25$.
 ///
-///
-/// $$
-/// S(q) = \frac{c \cdot df}{q R_g} \int_0^{x_{\max}} dx \, x^{df-2} \sin(q R_g x) e^{-c x^{df}}
-/// $$
-///
-/// where `x = u/Rg`; where `Rg` is the radius of gyration and `u` is the
-/// distance between two monomers; `q` is the magnitude of scattering
-/// vector, `df` is the fractal dimension, `c=0.5` is normalization factor.
-///
-/// Since we have a steep cut-off function for `x>1`, it would be enough
-/// to take `x_max` slightly larger than unity.
-/// Here we determine xmax so that `eta=c*x^df` becomes 25.
-///
-/// We use Simpson's rule for the numerical integration, and then,
-/// the integration range `[0,xmax]` will be divided by `2*m` points.
-///
-/// # Arguments
-/// - `d`: Fractal dimension.
-/// - `q`: Magnitude of scattering vector.
-/// - `r_g`: Radius of gyration.
-///
-/// # Returns
-/// - Value of the static structure factor.
-///
-/// # Caution
-/// For large `df(>2)` and large `qRg`, the numerical integration sometimes
-/// returns a negative value of `S(q)`. Since `S(q)` is a power spectrum,
-/// it must be positive. I also noticed that the same problem arises with
-/// the code written by Pascal Rannou. Because of this ill behavior, I
-/// prefer to use Gausian-cut-off model, which is more stable.
-///
-/// A not-too-bad tentative prescription is simply set `S(q)=0` when `S(q)<0`,
-/// which means scattered waves from each monomer is incoherent. This is
-/// what I did in if-sentence at the end of this subroutine.
+/// Integrated via composite Simpson's rule over $2 \times 10^{5}$ subintervals
+/// ($S(0) = 1$). Because the oscillatory integral can produce small negative
+/// artifacts at large $d_{f} > 2$ and large $q R_{g}$, negative values are
+/// clamped to $0$ (incoherent limit); [`FractalCutoff::Gaussian`] is preferred
+/// when numerical stability at large $q R_{g}$ is critical.
 fn structure_factor_integration(d: f64, q: f64, r_g: f64) -> f64 {
     let integration_grid_size = 100_000;
     let normalization_factor = 0.5; // Botet+ 1997
@@ -542,17 +551,10 @@ fn structure_factor_integration(d: f64, q: f64, r_g: f64) -> f64 {
     s_q
 }
 
-/// Integrand of the static structure factor.
-///
-/// # Arguments
-/// - `x`: Integration variable.
-/// - `c`: Normalization factor.
-/// - `d`: Fractal dimension.
-/// - `q`: Magnitude of scattering vector.
-/// - `r_g`: Radius of gyration.
-///
-/// # Returns
-/// - Value of the integrand.
+/// Evaluates the static structure-factor integrand
+/// $x^{d_{f} - 2} \sin(q R_{g} x) \thinspace e^{-c x^{d_{f}}}$ for
+/// [`structure_factor_integration`], returning $0$ at $x = 0$ or when the
+/// magnitude falls below $10^{-30}$.
 fn structure_factor_fn(x: f64, c: f64, d: f64, q: f64, r_g: f64) -> f64 {
     if x == 0.0 {
         0.0
@@ -562,19 +564,20 @@ fn structure_factor_fn(x: f64, c: f64, d: f64, q: f64, r_g: f64) -> f64 {
     }
 }
 
-/// Calculate Lorenz-Mie scattering coefficients (an,bn) for a monomer particle.
+/// Computes the electric ($a_{n}$) and magnetic ($b_{n}$) Lorenz-Mie
+/// scattering coefficients of a single spherical monomer for orders
+/// $n = 1, \dots, n_{\mathrm{stop}}$ (0-indexed), following
+/// [Bohren & Huffman (1983)](https://ui.adsabs.harvard.edu/abs/1983asls.book.....B/abstract)
+/// (App. A).
 ///
-/// Since monomer's size parameter is supposed not to be very large,
-/// we use the simple Bohren & Huffman Mie algorithm.
+/// Uses downward recurrence for the logarithmic derivative $D_{n}(m x)$ and
+/// upward recurrence for the real Riccati-Bessel functions $\psi_{n}(x)$ and
+/// $\chi_{n}(x)$ (with $\xi_{n}(x) = \psi_{n}(x) - i \chi_{n}(x)$ in the
+/// $e^{-i \omega t}$ convention).
 ///
-/// # Arguments
-/// - `x`: Size parameter.
-/// - `refrel`: Complex refractive index of the monomer.
-/// - `nstop`: Number of terms in the series expansion.
-///
-/// # Returns
-/// - `a`: Scattering coefficient.
-/// - `b`: Absorption coefficient.
+/// # Errors
+/// Returns an error if the required downward-recurrence order exceeds
+/// $1.5 \times 10^{5}$.
 fn lorenz_mie(x: f64, refrel: Complex64, nstop: usize) -> Result<(CVector, CVector)> {
     let nmxx = 150_000;
 
@@ -620,7 +623,11 @@ fn lorenz_mie(x: f64, refrel: Complex64, nstop: usize) -> Result<(CVector, CVect
     Ok((a, b))
 }
 
-/// Calculate scattering amplitudes $S_1, S_2$ from scattering coefficients `d`.
+/// Sums the scattering amplitude functions $S_{1}(\theta)$ and $S_{2}(\theta)$
+/// over the full $[0, \pi]$ angular grid ($2 N_{\theta} - 1$ points) from
+/// multipole coefficients `d` of shape `(nmax, 2)` (columns `0` and `1`
+/// storing $a_{n}$ and $b_{n}$), using forward/backward parity of $\pi_{n}$
+/// and $\tau_{n}$.
 fn renormalize(fracc: &FractalConfig, d: &CMatrix, dang: f64, nmax: usize) -> (CVector, CVector) {
     let cos_theta = (0..fracc.n_angles)
         .map(|j| (j as f64 * dang).cos())
@@ -663,49 +670,27 @@ fn renormalize(fracc: &FractalConfig, d: &CMatrix, dang: f64, nmax: usize) -> (C
     (s1, s2)
 }
 
-/// Solves the mean field theory.
+/// Solves the mean-field multiple-scattering linear system for the coupled
+/// monomer multipole coefficients
+/// ([Botet et al. 1997](https://ui.adsabs.harvard.edu/abs/1997ApOpt..36.8791B/abstract);
+/// [Tazaki & Tanaka 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract)).
 ///
-/// # PART I.
-/// Calculate a(nu,n,p) and b(nu,n,p):
+/// Computes the angular coupling integrals
+/// ([Tazaki & Tanaka 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract),
+/// Eqs. 29 and 30) via $400$-point Gauss-Legendre quadrature on $[-1, 1]$:
+/// $$a(\nu, n, p) = \frac{2p + 1}{2} \int_{-1}^{1} P_{\nu}^{1}(x) P_{n}^{1}(x) P_{p}(x) \thinspace \mathrm{d}x, \qquad b(\nu, n, p) = \frac{2p + 1}{2} \int_{-1}^{1} P_{\nu}^{1}(x) P_{n}^{1}(x) \frac{\mathrm{d}P_{p}(x)}{\mathrm{d}x} \thinspace \mathrm{d}x.$$
+/// By integrand parity, $a(\nu, n, p)$ vanishes unless $p$ shares the parity
+/// of $n + \nu$, whereas $b(\nu, n, p)$ vanishes unless $p$ has the opposite
+/// parity; thus $p$ spans every integer in $[|\nu - n|, \nu + n]$. Combining
+/// $a$ and $b$ with the radial Bessel integrals $S_{p}(X_{g})$ yields the
+/// translation matrices $\bar{A}_{1,n}^{1,\nu}$ and $\bar{B}_{1,n}^{1,\nu}$
+/// (Eqs. 14 and 15), and the resulting $2 n_{\max} \times 2 n_{\max}$ complex
+/// linear system $(I + S) r = y$ is solved via
+/// [`linalg::complex_matrix_inverse`].
 ///
-/// ```text
-///                   2p + 1  /+1
-///       a(nu,n,p) = -------- | dx P_nu^1(x) * P_n^1(x) * P_p(x),
-///                      2     /-1
-///     
-///                    2p + 1  /+1                         dP_p(x)
-///       b(nu,n,p) = -------- | dx P_nu^1(x) * P_n^1(x) * -------,
-///                      2     /-1                            dx
-/// ```
-///
-/// where `P_n^m` is the associated Legendre function (`n`: degree, `m`: order),
-///  `P_n` is the Legendre polynominal function
-///  (see Equations (29, 30) in Tazaki & Tanaka 2018).
-///  The integration is performed with the Gauss-Legendre quadrature.
-///
-/// # PART II.
-/// Calculate translation matrix coefficients
-///
-/// Translation coefficients: A and B (Equation # from Tazaki & Tanaka 2018)
-/// T(1,nu,n) : \bar{A}_{1,n}^{1,nu} defined in Equation (14)
-/// T(2,nu,n) : \bar{A}_{1,n}^{1,nu} defined in Equation (15)
-/// anunp     : a(nu,n,p)            defined in Equation (29)
-/// bnunp     : b(nu,n,p)            defined in Equation (30)
-///
-/// Note about the rule of rum with respect to the index p
-/// (RT and Botet, in private communication, 2017).
-///
-/// Just before Equation (4) in Botet et al. (1997), it is written that
-/// p should have the same parity as n+nu. However, this is only true
-/// true for a(nu,n,p), and not for b(nu,n,p)
-/// Thus, in this code, index p runs ALL integers between |nu-n| and nu+n.
-///
-/// Tips for efficient computation.
-/// The parity of the integrand of a and b leads following properties:
-/// - a(nu,n,p) .ne. 0 and b(nu,n,p) = 0 when p has the same parity as n+nu
-/// - b(nu,n,p) .ne. 0 and a(nu,n,p) = 0 when p has the opposite parity to n+nu
-///
-///--------------------------------------------------------------------------------
+/// # Errors
+/// Returns an error if Legendre evaluation, Bessel quadrature, or the complex
+/// linear solve fails.
 fn mean_field(fracc: &FractalConfig, ad: &CMatrix, x_g: f64, nmax: usize) -> Result<CVector> {
     let jm = 400; // Number of grid points for Gauss-Legendre quadrature
 
@@ -807,6 +792,14 @@ fn mean_field(fracc: &FractalConfig, ad: &CMatrix, x_g: f64, nmax: usize) -> Res
     Ok(r)
 }
 
+/// Computes the aggregate geometric cross section $G$ using the interpolation
+/// formula of [Okuzumi et al. (2009)](https://ui.adsabs.harvard.edu/abs/2009ApJ...707.1247O/abstract)
+/// with BCCA oblique-collision parameters ($k_{0,\mathrm{BCCA}} = 1.04$,
+/// $d_{f,\mathrm{BCCA}} = 1.90$;
+/// [Tazaki et al. 2016](https://ui.adsabs.harvard.edu/abs/2016ApJ...823...70T/abstract))
+/// and the [Minato et al. (2006)](https://ui.adsabs.harvard.edu/abs/2006A%26A...452..701M/abstract)
+/// fitting formula for $N \le 16$, capped at the non-overlapping monomer sum
+/// $N \pi R_{0}^{2}$.
 fn get_geometric_cross_section_okuzumi(n_monomers: f64, monomer_radius: f64, char_radius: f64) -> f64 {
     let k0_bcca = 1.04; // Tazaki+2016; BCCA with oblique collisions
     let df_bcca = 1.90; // Tazaki+2016; BCCA with oblique collisions
