@@ -31,42 +31,39 @@ pub mod legendre {
     use ndarray::Array1;
     use planetes_ext::types::RVector;
 
-    /// Computes the associated Legendre polynomials P_m^n(x) and their derivatives
+    /// Computes the associated Legendre polynomials $P_k^m(x)$ and their derivatives
+    /// for degrees $k = 0, \dots, n$.
     ///
     /// # Errors
-    /// - `m` must be 0, 1, or 2
+    /// - `m` must be 0, 1, or 2.
     pub fn lpmns(m: usize, n: usize, x: f64) -> Result<(RVector, RVector)> {
-        let mut pm: RVector = Array1::zeros(n);
-        let mut pd: RVector = Array1::zeros(n);
+        let mut pm: RVector = Array1::zeros(n + 1);
+        let mut pd: RVector = Array1::zeros(n + 1);
 
         let mf = m as f64;
 
         if (x.abs() - 1.0).abs() < f64::EPSILON {
-            for k in 0..n {
+            for k in 0..=n {
                 let kf = k as f64;
                 match m {
                     0 => {
                         pm[k] = 1.0;
                         pd[k] = 0.5 * kf * (kf + 1.0);
                         if x < 0.0 {
-                            pm[k] *= -1.0f64.powf(kf);
-                            pd[k] *= -1.0f64.powf(kf + 1.0);
+                            if k % 2 == 1 {
+                                pm[k] = -pm[k];
+                            } else {
+                                pd[k] = -pd[k];
+                            }
                         }
                     }
                     1 => {
-                        pm[k] = x;
-                        pd[k] = 0.5 * kf * (kf + 1.0) * x;
-                        if x < 0.0 {
-                            pm[k] *= -1.0f64.powf(kf);
-                            pd[k] *= -1.0f64.powf(kf + 1.0);
-                        }
+                        pd[k] = 1.0e300;
                     }
                     2 => {
-                        pm[k] = 0.5 * (3.0 * x.powi(2) - 1.0);
-                        pd[k] = 0.5 * kf * (kf + 1.0) * (3.0 * x.powi(2) - 1.0);
-                        if x < 0.0 {
-                            pm[k] *= -1.0f64.powf(kf);
-                            pd[k] *= -1.0f64.powf(kf + 1.0);
+                        pd[k] = -0.25 * (kf + 2.0) * (kf + 1.0) * kf * (kf - 1.0);
+                        if x < 0.0 && k % 2 == 0 {
+                            pd[k] = -pd[k];
                         }
                     }
                     _ => {
@@ -74,56 +71,70 @@ pub mod legendre {
                     }
                 }
             }
+            return Ok((pm, pd));
         }
 
         let x0 = (1.0 - x * x).abs();
         let mut pm0 = 1.0;
         let mut pmk = pm0;
-        for k in 0..m {
+        for k in 1..=m {
             let kf = k as f64;
-            pmk = (2.0 * kf + 1.0) * x0.sqrt() * pm0;
+            pmk = (2.0 * kf - 1.0) * x0.sqrt() * pm0;
             pm0 = pmk;
         }
-        let mut pm1 = (2.0 * m as f64 + 1.0) * x * pm0;
-        pm[m] = pmk;
-        pm[m + 1] = pm1;
-
-        for (k, val) in pm.iter_mut().enumerate().skip(m + 2).take(n - m - 2) {
-            let kf = k as f64;
-            *val = ((2.0 * kf - 1.0) * x * pm1 - (kf + mf - 1.0) * pmk) / (kf - mf);
-            pmk = pm1;
-            pm1 = *val;
+        let mut pm1 = (2.0 * mf + 1.0) * x * pm0;
+        if m <= n {
+            pm[m] = pmk;
+        }
+        if m < n {
+            pm[m + 1] = pm1;
         }
 
-        pd[0] = ((1.0 - mf) * pm[1] - x * pm[0]) / (x * x - 1.0);
-
-        for (k, val) in pd.iter_mut().enumerate().skip(1).take(n - 1) {
+        for k in (m + 2)..=n {
             let kf = k as f64;
-            *val = (kf * x * pm[k] - (kf + mf) * pm[k - 1]) / (x * x - 1.0);
+            let pm2 = ((2.0 * kf - 1.0) * x * pm1 - (kf + mf - 1.0) * pmk) / (kf - mf);
+            pm[k] = pm2;
+            pmk = pm1;
+            pm1 = pm2;
+        }
+
+        if n >= 1 {
+            pd[0] = ((1.0 - mf) * pm[1] - x * pm[0]) / (x * x - 1.0);
+        }
+
+        for k in 1..=n {
+            let kf = k as f64;
+            pd[k] = (kf * x * pm[k] - (kf + mf) * pm[k - 1]) / (x * x - 1.0);
         }
 
         Ok((pm, pd))
     }
 
+    /// Computes the Legendre polynomials $P_k(x)$ and their derivatives $P_k'(x)$
+    /// for degrees $k = 0, \dots, n$.
     #[must_use]
     pub fn lpn(n: usize, x: f64) -> (RVector, RVector) {
-        let mut pn: RVector = Array1::zeros(n);
-        let mut pd: RVector = Array1::zeros(n);
+        let mut pn: RVector = Array1::zeros(n + 1);
+        let mut pd: RVector = Array1::zeros(n + 1);
 
         pn[0] = 1.0;
-        pn[1] = x;
         pd[0] = 0.0;
+        if n == 0 {
+            return (pn, pd);
+        }
+
+        pn[1] = x;
         pd[1] = 1.0;
 
         let mut p0 = 1.0;
         let mut p1 = x;
 
-        for k in 2..n {
+        for k in 2..=n {
             let kf = k as f64;
-            let pf = (2.0 * kf - 1.0) * kf * x * p1 - (kf - 1.0) / kf * p0;
+            let pf = ((2.0 * kf - 1.0) * x * p1 - (kf - 1.0) * p0) / kf;
             pn[k] = pf;
             if (x.abs() - 1.0).abs() < f64::EPSILON {
-                pd[k] = 0.5 * x.powf(kf + 1.0) * kf * (kf + 1.0);
+                pd[k] = 0.5 * x.powi(k as i32 + 1) * kf * (kf + 1.0);
             } else {
                 pd[k] = kf * (p1 - x * pf) / (1.0 - x * x);
             }
@@ -260,7 +271,7 @@ pub mod bessel {
         let eta1 = 25.0;
         let eta2 = 40.0;
 
-        let nn = 10000; // Number of grid points in the numerical integration of S_p(kRg)
+        let nn = 100_000; // Number of grid points in the numerical integration of S_p(kRg)
         let nnf = nn as f64;
 
         let umax = match fracc.cutoff {
@@ -270,7 +281,7 @@ pub mod bessel {
         };
 
         let umin = x_g * (-eta2 / fracc.df).exp();
-        let du = (umax - umin).powf(1.0 / (nnf - 1.0));
+        let du = (umax / umin).powf(1.0 / (nnf - 1.0));
 
         let mut u: RVector = Array1::zeros(nn);
         let mut intg: CVector = Array1::zeros(nn);
@@ -286,9 +297,10 @@ pub mod bessel {
         let lnxb = b[0] * pf.powf(3.0) + b[1] * pf.powf(2.0) + b[2] * pf + b[3];
 
         for n in 0..nn {
-            let isol = if u[n] < lnxa {
+            let ln_u = u[n].ln();
+            let isol = if ln_u < lnxa {
                 1
-            } else if u[n] > lnxb {
+            } else if ln_u > lnxb {
                 3
             } else {
                 2
@@ -298,14 +310,16 @@ pub mod bessel {
             let yp = sy[p];
             let hp = Complex::new(jp, yp);
 
-            if jp * 0.0 != 0.0 || jp.is_nan() {
+            if !jp.is_finite() {
                 bail!("Error in sph_bessel (jp)");
-            } else if yp * 0.0 != 0.0 || yp.is_nan() {
+            } else if !yp.is_finite() {
                 bail!("Error in sph_bessel (yp)");
             }
 
-            intg[n] = u[n].powf(fracc.df - 1.0) * jp * hp * two_point_correlation(fracc, u[n], x_g);
-            intg_unit[n] = u[n].powf(fracc.df - 1.0) * two_point_correlation(fracc, u[n], x_g);
+            let fc = two_point_correlation(fracc, u[n], x_g);
+            let u_weight = u[n].powf(fracc.df - 1.0) * fc;
+            intg[n] = u_weight * jp * hp;
+            intg_unit[n] = u_weight;
         }
 
         // Use iterators to apply the trapezoidal rule
@@ -371,7 +385,7 @@ pub mod bessel {
                     f_n *= x / (2.0 * nf + 1.0);
                     let mut xi = 1.0;
                     let mut wa = 0.0;
-                    for i in 1..imax {
+                    for i in 1..=imax {
                         let ir = f64::from(i);
                         xi = -x * x * xi / (2.0 * ir * (2.0 * ir + 2.0 * nf + 1.0));
                         wa += xi;
@@ -390,7 +404,7 @@ pub mod bessel {
                 let mut k1 = 0.0;
                 let mut k0 = 1.0;
                 let mut k: RVector = Array1::zeros(m + nwarmup + 1);
-                for n in (m + nwarmup..0).rev() {
+                for n in (0..=m + nwarmup).rev() {
                     let nf = n as f64;
                     k[n] = -k1 + (2.0 * nf + 3.0) * k0 / x;
                     k1 = k0;
@@ -450,7 +464,7 @@ pub mod linalg {
         let mut imax = 0;
         let eps = 1e-20;
 
-        let mut vv: RVector = Array1::zeros(1000);
+        let mut vv: RVector = Array1::zeros(n);
         let mut indx: UVector = Array1::zeros(n);
 
         let mut aamax;
@@ -514,17 +528,17 @@ pub mod linalg {
     }
 
     fn lu_backsubstitution(a: &RMatrix, b: &mut RVector, indx: &UVector, n: usize) {
-        let mut ii = 0;
+        let mut ii: Option<usize> = None;
         for i in 0..n {
             let ll = indx[i];
             let mut sum = b[ll];
             b[ll] = b[i];
-            if ii != 0 {
-                for j in ii..i {
+            if let Some(start) = ii {
+                for j in start..i {
                     sum -= a[[i, j]] * b[j];
                 }
             } else if sum != 0.0 {
-                ii = i + 1;
+                ii = Some(i);
             }
             b[i] = sum;
         }
@@ -537,12 +551,12 @@ pub mod linalg {
         }
     }
 
-    /// Solves the linear equation \( T r = p \) for \( r \), where
-    /// \( T \) is a complex matrix and \( p \) is a complex vector. The function
+    /// Solves the linear equation $T r = p$ for $r$, where
+    /// $T$ is a complex matrix and $p$ is a complex vector. The function
     /// uses LU decomposition and back substitution to find the solution.
     ///
     /// # Errors
-    /// - If the matrix \( T \) is singular, an error will be returned.
+    /// - If the matrix $T$ is singular, an error will be returned.
     pub fn complex_matrix_inverse(
         n: usize,
         np: usize,
@@ -552,7 +566,7 @@ pub mod linalg {
         let mut a: RMatrix = Array2::zeros((np, np));
         let mut b: RVector = Array1::zeros(np);
 
-        let mut r: CVector = Array1::zeros(np);
+        let mut r: CVector = Array1::zeros(n);
 
         for i in 0..n {
             for j in 0..n {
@@ -1050,7 +1064,7 @@ pub mod special {
             }
             FractalCutoff::FractalDimension => {
                 let c = 0.5;
-                (c * fracc.df) * (-c * u / x).exp()
+                (c * fracc.df) * (-c * (u / x).powf(fracc.df)).exp()
             }
         }
     }
@@ -1066,7 +1080,7 @@ pub mod special {
         let mut y0 = 0.0;
         let mut y1 = 0.0;
         let mut hg = 0.0;
-        if b == 0.0 || (b - -(b.floor().abs())).abs() < f64::EPSILON {
+        if b == 0.0 || (b < 0.0 && (b - b.trunc()).abs() < f64::EPSILON) {
             hg = 1e300;
         } else if a == 0.0 || x == 0.0 {
             hg = 1.0;
@@ -1077,14 +1091,14 @@ pub mod special {
         } else if ((a - b) - 1.0).abs() < f64::EPSILON {
             hg = (1.0 + x / b) * x.exp();
         } else if (a - 1.0).abs() < f64::EPSILON && (b - 2.0).abs() < f64::EPSILON {
-            hg = (x.exp() - 1.0) * x.exp();
-        } else if (a - a.floor()).abs() < f64::EPSILON && a < 0.0 {
-            let m = -a.floor() as i32;
+            hg = (x.exp() - 1.0) / x;
+        } else if a < 0.0 && (a - a.trunc()).abs() < f64::EPSILON {
+            let m = (-a.trunc()) as i32;
             let mut r = 1.0;
             hg = 1.0;
-            for k in 0..m {
+            for k in 1..=m {
                 let kf = f64::from(k);
-                r *= (a + kf) / kf / (b + kf) * x;
+                r *= (a + kf - 1.0) / kf / (b + kf - 1.0) * x;
                 hg += r;
             }
         }
@@ -1112,11 +1126,11 @@ pub mod special {
             if x <= 30.0 + b.abs() || a < 0.0 {
                 hg = 1.0;
                 let mut rg = 1.0;
-                for j in 0..500 {
+                for j in 1..=500 {
                     let jf = f64::from(j);
-                    rg *= (a + jf) / (jf * (b + jf)) * x;
+                    rg *= (a + jf - 1.0) / (jf * (b + jf - 1.0)) * x;
                     hg += rg;
-                    if (hg / rg).abs() < 1e-15 {
+                    if (rg / hg).abs() < 1e-15 {
                         break;
                     }
                 }
@@ -1129,10 +1143,10 @@ pub mod special {
                 let mut sum2 = 1.0;
                 let mut r1 = 1.0;
                 let mut r2 = 1.0;
-                for i in 0..8 {
+                for i in 1..=8 {
                     let ir = f64::from(i);
-                    r1 = -r1 * (a + ir) * (a - b + ir + 1.0) / (x * (ir + 1.0));
-                    r2 = -r2 * (b - a) * (a - ir - 1.0) / (x * (ir + 1.0));
+                    r1 = -r1 * (a + ir - 1.0) * (a - b + ir) / (x * ir);
+                    r2 = -r2 * (b - a + ir - 1.0) * (a - ir) / (x * ir);
                     sum1 += r1;
                     sum2 += r2;
                 }
@@ -1147,7 +1161,7 @@ pub mod special {
             }
         }
         if a0 >= 2.0 {
-            for _ in 0..(la - 2) {
+            for _ in 1..la {
                 hg = ((2.0 * a - b + x) * y1 + (b - a) * y0) / a;
                 y0 = y1;
                 y1 = hg;
@@ -1244,11 +1258,181 @@ pub fn regrid_lnk_data(
         }
     } else {
         // Use the dielectric extrapolation, this is the default
+        let (base_l, base_n, base_k) = if i == 0 {
+            (l0[n_actual - 1], n0[n_actual - 1], k0[n_actual - 1])
+        } else {
+            (lam[i - 1], e1[i - 1], e2[i - 1])
+        };
         for j in i..n {
-            e1[j] = e1[i - 1];
-            e2[j] = e2[i - 1] * lam[i - 1] / lam[j];
+            e1[j] = base_n;
+            e2[j] = base_k * base_l / lam[j];
         }
     }
 
     (e1, e2)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::f64::consts::PI;
+
+    use approx::assert_relative_eq;
+    use ndarray::{Array1, Array2};
+    use num_complex::Complex64;
+
+    use crate::fractal::FractalConfig;
+    use crate::fractal::{FractalCutoff, FractalGeometry};
+
+    use super::bessel;
+    use super::legendre;
+    use super::linalg;
+    use super::special;
+
+    #[test]
+    fn legendre_lpn_interior_and_endpoints() {
+        let x: f64 = 0.3;
+        let (pn, pd) = legendre::lpn(4, x);
+        assert_eq!(pn.len(), 5);
+        assert_relative_eq!(pn[0], 1.0, epsilon = 1e-14);
+        assert_relative_eq!(pn[1], x, epsilon = 1e-14);
+        assert_relative_eq!(pn[2], 0.5 * (3.0 * x * x - 1.0), epsilon = 1e-14);
+        assert_relative_eq!(pn[3], 0.5 * (5.0 * x.powi(3) - 3.0 * x), epsilon = 1e-14);
+        assert_relative_eq!(
+            pn[4],
+            0.125 * (35.0 * x.powi(4) - 30.0 * x * x + 3.0),
+            epsilon = 1e-14
+        );
+        assert_relative_eq!(pd[2], 3.0 * x, epsilon = 1e-14);
+        assert_relative_eq!(pd[3], 1.5 * (5.0 * x * x - 1.0), epsilon = 1e-14);
+
+        let (values_neg, derivs_neg) = legendre::lpn(4, -1.0);
+        for k in 0..=4 {
+            let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
+            assert_relative_eq!(values_neg[k], sign, epsilon = 1e-14);
+            let kf = k as f64;
+            assert_relative_eq!(derivs_neg[k], -sign * 0.5 * kf * (kf + 1.0), epsilon = 1e-14);
+        }
+    }
+
+    #[test]
+    fn legendre_lpmns_interior_and_endpoints() {
+        let x: f64 = 0.4;
+        let s = (1.0 - x * x).sqrt();
+        let (pm, pd) = legendre::lpmns(1, 3, x).unwrap();
+        assert_eq!(pm.len(), 4);
+        assert_relative_eq!(pm[0], 0.0, epsilon = 1e-14);
+        assert_relative_eq!(pm[1], s, epsilon = 1e-14);
+        assert_relative_eq!(pm[2], 3.0 * x * s, epsilon = 1e-14);
+        assert_relative_eq!(pm[3], 1.5 * (5.0 * x * x - 1.0) * s, epsilon = 1e-14);
+        assert_relative_eq!(pd[1], -x / s, epsilon = 1e-14);
+
+        // Endpoint |x| = 1 must return cleanly without dividing by zero
+        let (pm0, pd0) = legendre::lpmns(0, 3, -1.0).unwrap();
+        assert_relative_eq!(pm0[0], 1.0, epsilon = 1e-14);
+        assert_relative_eq!(pm0[1], -1.0, epsilon = 1e-14);
+        assert_relative_eq!(pm0[2], 1.0, epsilon = 1e-14);
+        assert_relative_eq!(pm0[3], -1.0, epsilon = 1e-14);
+        assert_relative_eq!(pd0[1], 1.0, epsilon = 1e-14);
+        assert_relative_eq!(pd0[2], -3.0, epsilon = 1e-14);
+
+        let (pm1, pd1) = legendre::lpmns(1, 3, 1.0).unwrap();
+        assert!(pm1.iter().all(|v| v.is_finite() && *v == 0.0));
+        assert!(pd1.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn confluent_hypergeometric_identities() {
+        // M(1, 2, x) = (e^x - 1) / x
+        let x: f64 = 1.7;
+        assert_relative_eq!(
+            special::confluent_hypergeometric(1.0, 2.0, x),
+            (x.exp() - 1.0) / x,
+            epsilon = 1e-13
+        );
+        // Negative integer a = -2 polynomial: 1 - 2x/b + x^2/(b(b+1))
+        let b = 1.5;
+        let expected_poly = 1.0 - 2.0 * x / b + x * x / (b * (b + 1.0));
+        assert_relative_eq!(
+            special::confluent_hypergeometric(-2.0, b, x),
+            expected_poly,
+            epsilon = 1e-13
+        );
+        // Kummer transformation: M(a, b, -x) = e^{-x} M(b - a, b, x)
+        let lhs = special::confluent_hypergeometric(0.95, 1.5, -2.5);
+        let rhs = (-2.5_f64).exp() * special::confluent_hypergeometric(0.55, 1.5, 2.5);
+        assert_relative_eq!(lhs, rhs, max_relative = 1e-12);
+        // a >= 2 upward recurrence: M(2.5, 1.5, x) = (1 + 2x/3) e^x
+        assert_relative_eq!(
+            special::confluent_hypergeometric(2.5, 1.5, 1.2),
+            (1.0 + 2.0 * 1.2 / 3.0) * 1.2_f64.exp(),
+            max_relative = 1e-12
+        );
+        // Large argument asymptotic branch: M(0.5, 1.5, -z^2) ~ sqrt(pi)/(2 z)
+        let z: f64 = 8.0;
+        let asymp = PI.sqrt() / (2.0 * z);
+        assert_relative_eq!(
+            special::confluent_hypergeometric(0.5, 1.5, -z * z),
+            asymp,
+            max_relative = 1e-6
+        );
+    }
+
+    #[test]
+    fn complex_linear_solver_with_leading_zero_rhs() {
+        let t = Array2::from_shape_vec(
+            (3, 3),
+            vec![
+                Complex64::new(2.0, 1.0),
+                Complex64::new(-1.0, 0.5),
+                Complex64::new(0.0, -2.0),
+                Complex64::new(1.0, -1.0),
+                Complex64::new(3.0, 2.0),
+                Complex64::new(1.0, 0.0),
+                Complex64::new(0.5, 1.5),
+                Complex64::new(-2.0, 1.0),
+                Complex64::new(4.0, -1.0),
+            ],
+        )
+        .unwrap();
+        let p = Array1::from_vec(vec![
+            Complex64::new(0.0, 0.0),
+            Complex64::new(1.0, -2.0),
+            Complex64::new(3.0, 0.5),
+        ]);
+        let r = linalg::complex_matrix_inverse(3, 6, &p, &t).unwrap();
+        assert_eq!(r.len(), 3);
+        let residual = t.dot(&r) - &p;
+        for val in &residual {
+            assert!(val.norm() < 1e-13, "residual too large: {val}");
+        }
+    }
+
+    #[test]
+    fn int_sph_bessel_gaussian_analytic_im_s0() {
+        // For df = 2, Gaussian cutoff, p = 0:
+        // Im[S_0(x_g)] = -sqrt(2*pi) / (4*x_g) * M(1/2, 3/2, -2*x_g^2)
+        let x_g = 1.5;
+        let cfg = FractalConfig {
+            cutoff: FractalCutoff::Gaussian,
+            geometry: FractalGeometry::Circular,
+            df: 2.0,
+            ..Default::default()
+        };
+        let sp = bessel::int_sph_bessel(&cfg, x_g, 0).unwrap();
+        let analytic_im = -(2.0 * PI).sqrt() / (4.0 * x_g)
+            * special::confluent_hypergeometric(0.5, 1.5, -2.0 * x_g * x_g);
+        assert_relative_eq!(sp.im, analytic_im, max_relative = 1e-3);
+
+        // Also check FractalDimension and Exponential cutoffs satisfy unitary check
+        for cutoff in [FractalCutoff::Exponential, FractalCutoff::FractalDimension] {
+            let cfg_c = FractalConfig {
+                cutoff,
+                geometry: FractalGeometry::Circular,
+                df: 1.8,
+                ..Default::default()
+            };
+            let val = bessel::int_sph_bessel(&cfg_c, 2.0, 2).unwrap();
+            assert!(val.re.is_finite() && val.im.is_finite());
+        }
+    }
 }
