@@ -315,9 +315,10 @@ impl SizeDistribution {
     }
 
     /// Evaluates $[\langle a \rangle, \langle a^{2} \rangle^{1/2}, \langle a^{3} \rangle^{1/3}]$
-    /// over a sub-interval `[amin, amax]` using $1000$ logarithmically spaced
-    /// points for analytic distributions (or exact sums for monodisperse and
-    /// tabulated distributions).
+    /// over a sub-interval `[amin, amax]` using composite trapezoidal
+    /// quadrature on $1000$ logarithmically spaced points for analytic
+    /// distributions (or exact sums for monodisperse and tabulated
+    /// distributions).
     fn moments_in_range(&self, amin: f64, amax: f64) -> [f64; 3] {
         match self {
             Self::Monodisperse { radius } => [*radius, *radius, *radius],
@@ -357,19 +358,22 @@ impl SizeDistribution {
                     } else {
                         10.0_f64.powf(aminlog + (amaxlog - aminlog) * (is as f64) / nsf)
                     };
-                    // On a logarithmic grid (d ln a = const), bin weight is f(a) * a * d ln a.
-                    let nr = match self {
-                        Self::Normal { mean, sigma, .. } => {
-                            let expo = 0.5 * ((r - mean) / sigma).powi(2);
-                            if expo > 99.0 { 0.0 } else { r * (-expo).exp() }
-                        }
-                        Self::LogNormal { mean, sigma, .. } => {
-                            let expo = 0.5 * ((r / mean).ln() / sigma).powi(2);
-                            if expo > 99.0 { 0.0 } else { (-expo).exp() }
-                        }
-                        Self::PowerLaw { slope, .. } => r.powf(1.0 - slope),
-                        Self::Monodisperse { .. } | Self::Tabulated { .. } => unreachable!(),
-                    };
+                    let trap = if is == 0 || is == ns - 1 { 0.5 } else { 1.0 };
+                    // On a logarithmic grid (d ln a = const), composite trapezoidal weight
+                    // is trap * f(a) * a * d ln a.
+                    let nr = trap
+                        * match self {
+                            Self::Normal { mean, sigma, .. } => {
+                                let expo = 0.5 * ((r - mean) / sigma).powi(2);
+                                if expo > 99.0 { 0.0 } else { r * (-expo).exp() }
+                            }
+                            Self::LogNormal { mean, sigma, .. } => {
+                                let expo = 0.5 * ((r / mean).ln() / sigma).powi(2);
+                                if expo > 99.0 { 0.0 } else { (-expo).exp() }
+                            }
+                            Self::PowerLaw { slope, .. } => r.powf(1.0 - slope),
+                            Self::Monodisperse { .. } | Self::Tabulated { .. } => unreachable!(),
+                        };
                     totn += nr;
                     tot[0] += nr * r;
                     tot[1] += nr * r.powi(2);
@@ -1356,7 +1360,9 @@ impl PreparedModel {
     }
 
     /// Constructs the discrete grain-size grid `(radii, weights)` over
-    /// `[amin, amax]` with `ns` bins, normalized so that the total grain volume
+    /// `[amin, amax]` with `ns` bins, using composite trapezoidal endpoint
+    /// weights ($1/2$ at $a_{\min}$ and $a_{\max}$) on the logarithmic grid for
+    /// analytic distributions, normalized so that the total grain volume
     /// $\sum w_{i} a_{i}^{3} = 1$.
     ///
     /// # Errors
@@ -1414,24 +1420,27 @@ impl PreparedModel {
                     } else {
                         10.0_f64.powf(aminlog + (amaxlog - aminlog) * (is as f64) / nsf)
                     };
-                    // On a logarithmic grid (d ln a = const), bin weight is f(a) * a * d ln a.
-                    *nr_val = match &self.config.size_distribution {
-                        SizeDistribution::Normal { mean, sigma, .. } => {
-                            let expo = 0.5 * ((*r_val - mean) / sigma).powi(2);
-                            if expo > 99.0 {
-                                0.0
-                            } else {
-                                *r_val * (-expo).exp()
+                    let trap = if is == 0 || is == ns - 1 { 0.5 } else { 1.0 };
+                    // On a logarithmic grid (d ln a = const), composite trapezoidal weight
+                    // is trap * f(a) * a * d ln a.
+                    *nr_val = trap
+                        * match &self.config.size_distribution {
+                            SizeDistribution::Normal { mean, sigma, .. } => {
+                                let expo = 0.5 * ((*r_val - mean) / sigma).powi(2);
+                                if expo > 99.0 {
+                                    0.0
+                                } else {
+                                    *r_val * (-expo).exp()
+                                }
                             }
-                        }
-                        SizeDistribution::LogNormal { mean, sigma, .. } => {
-                            let expo = 0.5 * ((*r_val / mean).ln() / sigma).powi(2);
-                            if expo > 99.0 { 0.0 } else { (-expo).exp() }
-                        }
-                        SizeDistribution::PowerLaw { slope, .. } => r_val.powf(1.0 - slope),
-                        SizeDistribution::Monodisperse { .. }
-                        | SizeDistribution::Tabulated { .. } => unreachable!(),
-                    };
+                            SizeDistribution::LogNormal { mean, sigma, .. } => {
+                                let expo = 0.5 * ((*r_val / mean).ln() / sigma).powi(2);
+                                if expo > 99.0 { 0.0 } else { (-expo).exp() }
+                            }
+                            SizeDistribution::PowerLaw { slope, .. } => r_val.powf(1.0 - slope),
+                            SizeDistribution::Monodisperse { .. }
+                            | SizeDistribution::Tabulated { .. } => unreachable!(),
+                        };
                     tot += *nr_val * r_val.powi(3);
                 }
                 if tot <= 0.0 {
@@ -2790,10 +2799,10 @@ mod tests {
         cfg.method = ScatteringMethod::mie();
         let p = cfg.compute().unwrap();
 
-        assert_relative_eq!(p.k_abs[0], 455.568, max_relative = 1e-3);
-        assert_relative_eq!(p.k_sca[0], 293.273, max_relative = 1e-3);
-        assert_relative_eq!(p.k_ext[0], 748.842, max_relative = 1e-3);
-        assert_relative_eq!(p.g[0], 0.779_307, max_relative = 1e-3);
+        assert_relative_eq!(p.k_abs[0], 503.854, max_relative = 1e-3);
+        assert_relative_eq!(p.k_sca[0], 325.118, max_relative = 1e-3);
+        assert_relative_eq!(p.k_ext[0], 828.972, max_relative = 1e-3);
+        assert_relative_eq!(p.g[0], 0.776_000, max_relative = 1e-3);
 
         // Large-grain Mie fallback (rad / lam = 10_000 >= 5000)
         let big = KappaConfig {
@@ -2834,9 +2843,9 @@ mod tests {
             ..KappaConfig::default()
         };
         let p = cfg.compute().unwrap();
-        assert_relative_eq!(p.k_abs[0], 2991.23, max_relative = 1e-3);
-        assert_relative_eq!(p.k_sca[0], 1890.09, max_relative = 1e-3);
-        assert_relative_eq!(p.g[0], 0.730_994, max_relative = 1e-3);
+        assert_relative_eq!(p.k_abs[0], 3292.46, max_relative = 1e-3);
+        assert_relative_eq!(p.k_sca[0], 2102.58, max_relative = 1e-3);
+        assert_relative_eq!(p.g[0], 0.723_774, max_relative = 1e-3);
 
         // 1 core + 2 mantles (nmant > ncore)
         let cfg2 = KappaConfig {
@@ -2919,7 +2928,7 @@ mod tests {
         };
         let p_grid = cde.compute().unwrap();
         assert_relative_eq!(p_grid.k_abs[0], 3071.49, max_relative = 1e-3);
-        assert_relative_eq!(p_grid.k_sca[0], 0.215_381, max_relative = 1e-3);
+        assert_relative_eq!(p_grid.k_sca[0], 0.199_600, max_relative = 1e-3);
 
         let m = &p.mueller[0];
         for j in 0..cde.n_angles {
@@ -2980,6 +2989,23 @@ mod tests {
         assert_relative_eq!(lgnm_m[0], (0.5 * 0.25_f64).exp(), max_relative = 1e-3);
         assert_relative_eq!(lgnm_m[1], 0.25_f64.exp(), max_relative = 1e-3);
         assert_relative_eq!(lgnm_m[2], (1.5 * 0.25_f64).exp(), max_relative = 1e-3);
+
+        // Exact analytical power-law moments for f(a) ~ a^(-3.5) on [0.05, 3000]
+        let pl_sd = SizeDistribution::PowerLaw {
+            min: 0.05,
+            max: 3000.0,
+            slope: 3.5,
+            bins: None,
+        };
+        let pl_m = pl_sd.moments();
+        let (a0, a1): (f64, f64) = (0.05, 3000.0);
+        let n_int = (a1.powf(-2.5) - a0.powf(-2.5)) / -2.5;
+        let m1_exact = ((a1.powf(-1.5) - a0.powf(-1.5)) / -1.5) / n_int;
+        let m2_exact = (((a1.powf(-0.5) - a0.powf(-0.5)) / -0.5) / n_int).sqrt();
+        let m3_exact = (((a1.powf(0.5) - a0.powf(0.5)) / 0.5) / n_int).powf(1.0 / 3.0);
+        assert_relative_eq!(pl_m[0], m1_exact, max_relative = 1e-4);
+        assert_relative_eq!(pl_m[1], m2_exact, max_relative = 1e-4);
+        assert_relative_eq!(pl_m[2], m3_exact, max_relative = 1e-4);
 
         // Structured validation errors
         assert!(matches!(
