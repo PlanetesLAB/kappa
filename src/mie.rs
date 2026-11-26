@@ -1,6 +1,20 @@
 //! Lorenz-Mie scattering calculations for homogeneous spheres.
 //!
-//! Implements the method of De Rooij & Van der Stap (1984).
+//! Implements the downward-recurrence algorithm of
+//! [De Rooij & Van der Stap (1984)](https://ui.adsabs.harvard.edu/abs/1984A%26A...131..237D/abstract),
+//! with series truncation following
+//! [Wiscombe (1980)](https://ui.adsabs.harvard.edu/abs/1980ApOpt..19.1505W/abstract)
+//! and Bohren & Huffman (1983, *Absorption and Scattering of Light by Small
+//! Particles*, Wiley).
+//!
+//! Callers supply the complex refractive index as $m = n + i k$ ($k \ge 0$);
+//! [`de_rooij_1984`] conjugates it internally to $m^{*} = n - i k$ to match
+//! the $e^{+i \omega t}$ harmonic time convention of the solver. Because
+//! homogeneous spheres satisfy $F_{22}(\theta) = F_{11}(\theta)$ and
+//! $F_{44}(\theta) = F_{33}(\theta)$, only the four independent Mueller matrix
+//! elements $F_{11}, F_{12}, F_{33}, F_{34}$ are returned, normalized in the
+//! Hovenier et al. (2004) convention:
+//! $$\frac{1}{2} \int_{0}^{\pi} F_{11}(\theta) \sin\theta \thinspace \mathrm{d}\theta = 1.$$
 #![allow(clippy::inline_always)]
 
 use std::f64::consts::PI;
@@ -15,47 +29,103 @@ use planetes_ext::types::{CVector, RMatrix, RVector};
 /// Input parameters for Lorenz-Mie scattering of a homogeneous sphere.
 #[derive(Debug)]
 pub struct MieConfig {
+    /// Number of scattering angles in the output Mueller vectors
+    /// (must satisfy $2 \le N_{\theta} \le 6000$).
     pub n_angles: usize,
+    /// Series truncation threshold $\delta$: summation stops once an individual
+    /// multipole contribution $(2n + 1)(|a_{n}|^{2} + |b_{n}|^{2}) < \delta$.
     pub delta: f64,
+    /// Minimum scattering angle $\theta_{\min}$ in degrees.
     pub theta_min: f64,
+    /// Maximum scattering angle $\theta_{\max}$ in degrees.
     pub theta_max: f64,
+    /// Uniform angular grid spacing $\Delta\theta$ in degrees.
     pub step: f64,
+    /// Incident wavelength $\lambda$ (same length unit as `radius`, typically
+    /// $\mu\mathrm{m}$).
     pub wavelength: f64,
+    /// Complex refractive index $m = n + i k$ with $k \ge 0$ (conjugated
+    /// internally by [`de_rooij_1984`]).
     pub refractive_index: Complex64,
+    /// Sphere radius $a$ (same length unit as `wavelength`, typically
+    /// $\mu\mathrm{m}$).
     pub radius: f64,
 }
 
-/// Output cross sections, efficiencies, and Mueller elements from Lorenz-Mie scattering.
+/// Output cross sections, efficiencies, and Mueller scattering matrix elements
+/// for a homogeneous sphere.
 #[derive(Debug)]
 pub struct MieResult {
+    /// Scattering angle cosines $\cos\theta$ stored in descending angle order
+    /// ($\theta_{\max} \to \theta_{\min}$).
     pub cos_theta: RVector,
+    /// Scattering angles $\theta$ in degrees, in ascending order
+    /// ($\theta_{\min} \to \theta_{\max}$).
     pub theta_deg: RVector,
+    /// Scattering cross section
+    /// $C_{\mathrm{sca}} = \frac{\lambda^{2}}{2\pi} \sum_{n=1}^{N} (2n + 1)(|a_{n}|^{2} + |b_{n}|^{2})$
+    /// (in squared units of `wavelength`).
     pub c_sca: f64,
+    /// Extinction cross section
+    /// $C_{\mathrm{ext}} = \frac{\lambda^{2}}{2\pi} \sum_{n=1}^{N} (2n + 1)\operatorname{Re}(a_{n} + b_{n})$
+    /// (in squared units of `wavelength`).
     pub c_ext: f64,
+    /// Dimensionless scattering efficiency $Q_{\mathrm{sca}} = C_{\mathrm{sca}} / (\pi a^{2})$.
     pub q_sca: f64,
+    /// Dimensionless extinction efficiency $Q_{\mathrm{ext}} = C_{\mathrm{ext}} / (\pi a^{2})$.
     pub q_ext: f64,
+    /// Single-scattering albedo $\omega = C_{\mathrm{sca}} / C_{\mathrm{ext}}$.
     pub albedo: f64,
+    /// Geometric cross section $G = \pi a^{2}$ (not the asymmetry parameter
+    /// $\langle \cos\theta \rangle$).
     pub g: f64,
+    /// Effective sphere radius $a$.
     pub r_eff: f64,
+    /// Size parameter $x = 2\pi a / \lambda$.
     pub x_eff: f64,
+    /// Sphere volume $V = \frac{4}{3}\pi a^{3}$.
     pub volume: f64,
+    /// Normalized phase function $F_{11}(\theta)$ on the ascending `theta_deg` grid.
     pub f11: RVector,
+    /// Normalized linear-polarization element $F_{12}(\theta)$ on `theta_deg`.
     pub f12: RVector,
+    /// Normalized diagonal polarization element $F_{33}(\theta)$ on `theta_deg`.
     pub f33: RVector,
+    /// Normalized circular-polarization element $F_{34}(\theta)$ on `theta_deg`.
     pub f34: RVector,
 }
 
-/// Computes Lorenz-Mie cross sections and Mueller scattering matrix elements using the method of
-/// De Rooij & Van der Stap (1984).
+/// Computes Lorenz-Mie cross sections and Mueller scattering matrix elements
+/// using the algorithm of
+/// [De Rooij & Van der Stap (1984)](https://ui.adsabs.harvard.edu/abs/1984A%26A...131..237D/abstract).
+///
+/// Conjugates `mie_cfg.refractive_index` ($n + i k \to n - i k$) internally to
+/// match the $e^{+i \omega t}$ harmonic time convention of the solver.
 ///
 /// # Errors
-/// Returns an error if the configuration parameters are non-positive or if the number of
-/// scattering angles exceeds the internal limit (6000).
+/// Returns an error if `radius`, `wavelength`, or `step` is non-positive, if
+/// `n_angles < 2`, or if the implied angular grid exceeds $6000$ angles.
 pub fn de_rooij_1984(mie_cfg: &MieConfig) -> Result<MieResult> {
     let m = mie_cfg.refractive_index.conj();
     get_scattering_matrix(mie_cfg, m)
 }
 
+/// Core Lorenz-Mie driver operating in the $m = n - i k$ ($e^{+i \omega t}$)
+/// convention.
+///
+/// Computes the Wiscombe-like multipole bound
+/// $n_{\max} = \lfloor x + 4.05 x^{1/3} + 20 \rfloor$ and downward-recurrence
+/// starting orders $n_{\psi} = n_{\max} + 60$ and
+/// $n_{D} = \max(\lfloor |m|x + 4.05 (|m|x)^{1/3} + 70 \rfloor, n_{\max} + 70)$
+/// (ensuring stability even when $|m| < 1$). Evaluates $a_{n}$ and $b_{n}$ via
+/// [`riccati_bessel_and_log_deriv`] and [`mie_coefficients`], truncates the
+/// series once $(2n + 1)(|a_{n}|^{2} + |b_{n}|^{2}) < \delta$, pairs forward
+/// and backward angles when [`is_symmetric_grid`] holds (halving angular work),
+/// and normalizes $F_{ij}$ by $2 \sum (2n + 1)(|a_{n}|^{2} + |b_{n}|^{2})$.
+///
+/// # Errors
+/// Returns an error if `radius`, `wavelength`, or `step` is non-positive, if
+/// `n_angles < 2`, or if the angular grid has more than $6000$ points.
 #[allow(clippy::similar_names)]
 #[inline(always)]
 fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult> {
@@ -255,6 +325,10 @@ fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult>
     Ok(mie_result)
 }
 
+/// Returns `true` if the uniform angular grid $[\theta_{\min}, \theta_{\max}]$
+/// with spacing `step` is symmetric about $90^{\circ}$
+/// ($\theta_{\min} + \theta_{\max} = 180^{\circ}$ and $\theta_{\max} - \theta_{\min}$
+/// is an integer multiple of `step` within $10^{-6}$ degrees).
 fn is_symmetric_grid(theta_min: f64, theta_max: f64, step: f64) -> bool {
     let eps = 1e-6;
     let half_eps = 0.5 * eps;
@@ -263,6 +337,16 @@ fn is_symmetric_grid(theta_min: f64, theta_max: f64, step: f64) -> bool {
         && ((theta_max - theta_min + half_eps).rem_euclid(step) < eps)
 }
 
+/// Evaluates the Riccati-Bessel functions $\psi_{n}(x) = x j_{n}(x)$ and
+/// $\chi_{n}(x) = -x y_{n}(x)$ for $n = 0, \dots, n_{\max}$ together with the
+/// complex logarithmic derivative $D_{n}(z) = \psi_{n}^{\prime}(z)/\psi_{n}(z)$
+/// at $z = m x$ for $n = 1, \dots, n_{\max}$ (stored 0-indexed at
+/// `d_log[n - 1]`).
+///
+/// Both the ratios $\psi_{n}(x)/\psi_{n-1}(x)$ and $D_{n}(m x)$ are computed
+/// by stable downward recurrence from `n_psi` and `n_d`, respectively, while
+/// $\chi_{n}(x)$ is computed by stable upward recurrence from
+/// $\chi_{0}(x) = \cos x$ and $\chi_{1}(x) = \cos x / x + \sin x$.
 #[allow(clippy::similar_names)]
 #[inline(always)]
 fn riccati_bessel_and_log_deriv(
@@ -317,6 +401,10 @@ fn riccati_bessel_and_log_deriv(
     (psi, chi, d_log)
 }
 
+/// Computes the Lorenz-Mie scattering coefficients $a_{n}$ and $b_{n}$ for
+/// $n = 1, \dots, n_{\max}$ (stored 0-indexed) from $\psi_{n}(x)$,
+/// $\chi_{n}(x)$, and $D_{n}(m x)$ using $\zeta_{n}(x) = \psi_{n}(x) + i\chi_{n}(x)$:
+/// $$a_{n} = \frac{[D_{n}(m x)/m + n/x]\psi_{n}(x) - \psi_{n-1}(x)}{[D_{n}(m x)/m + n/x]\zeta_{n}(x) - \zeta_{n-1}(x)}, \qquad b_{n} = \frac{[m D_{n}(m x) + n/x]\psi_{n}(x) - \psi_{n-1}(x)}{[m D_{n}(m x) + n/x]\zeta_{n}(x) - \zeta_{n-1}(x)}.$$
 #[allow(clippy::similar_names)]
 #[inline(always)]
 fn mie_coefficients(
@@ -347,6 +435,10 @@ fn mie_coefficients(
     (an, bn)
 }
 
+/// Evaluates the Mie angular functions $\pi_{n}(\mu) = P_{n}^{1}(\mu) / \sqrt{1 - \mu^{2}}$
+/// and $\tau_{n}(\mu) = \mathrm{d}P_{n}^{1}(\cos\theta)/\mathrm{d}\theta$ at
+/// $\mu = \cos\theta$ for $n = 1, \dots, N$ (stored 0-indexed) by upward
+/// recurrence into the pre-allocated buffers `pi` and `tau` (length $N \ge 2$).
 #[inline(always)]
 fn pitau_into(cos_theta: f64, pi: &mut RVector, tau: &mut RVector) {
     let nmax = pi.len();
