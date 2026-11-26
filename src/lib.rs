@@ -5,7 +5,6 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::many_single_char_names)]
 #![allow(clippy::doc_markdown)]
-#![allow(clippy::inconsistent_struct_constructor)]
 #![allow(clippy::cast_possible_wrap)]
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/PlanetesLAB/documentation/refs/heads/main/logo.jpg"
@@ -215,7 +214,6 @@
 #[cfg(feature = "cli")]
 pub mod cli;
 pub mod components;
-pub mod config;
 pub mod dhs;
 pub mod fractal;
 pub mod geofractal;
@@ -224,6 +222,3 @@ pub mod mie;
 pub mod opac;
 pub mod progress;
 pub mod utils;
-
-#[allow(unused_imports)]
-use crate::components::*;

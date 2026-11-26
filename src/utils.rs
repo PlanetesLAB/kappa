@@ -563,12 +563,7 @@ pub mod linalg {
     ///
     /// # Errors
     /// Returns an error if the matrix $T$ is singular or has incompatible dimensions.
-    pub fn complex_matrix_inverse(
-        n: usize,
-        _np: usize,
-        p: &CVector,
-        t: &CMatrix,
-    ) -> Result<CVector> {
+    pub fn complex_matrix_inverse(n: usize, p: &CVector, t: &CMatrix) -> Result<CVector> {
         if n == 0 || t.nrows() < n || t.ncols() < n || p.len() < n {
             bail!("Invalid dimensions in complex_matrix_inverse");
         }
@@ -1389,7 +1384,7 @@ mod tests {
             Complex64::new(1.0, -2.0),
             Complex64::new(3.0, 0.5),
         ]);
-        let r = linalg::complex_matrix_inverse(3, 6, &p, &t).unwrap();
+        let r = linalg::complex_matrix_inverse(3, &p, &t).unwrap();
         assert_eq!(r.len(), 3);
         let residual = t.dot(&r) - &p;
         for val in &residual {

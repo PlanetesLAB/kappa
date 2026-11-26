@@ -1,15 +1,21 @@
-use anyhow::Result;
+use std::process::ExitCode;
 
 use kappa::cli::CliAction;
 use kappa::cli::launch;
-use kappa::opac::KappaError;
 
-fn main() -> Result<(), KappaError> {
-    if let CliAction::Run(mut kpc) = launch()? {
-        kpc.prepare_inputs()?;
-        kpc.initialize()?;
-        kpc.run()?;
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::FAILURE
+        }
     }
+}
 
+fn run() -> Result<(), kappa::opac::KappaError> {
+    if let CliAction::Run(config) = launch()? {
+        config.run()?;
+    }
     Ok(())
 }

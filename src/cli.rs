@@ -2,19 +2,17 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
-use anyhow::anyhow;
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 
 use crate::components::MATERIAL_KEYS;
 use crate::components::try_get_lnk_data;
 use crate::io::{read_sizedis_file, read_wavelength_grid};
-use crate::opac::SpecialConfigs;
-use crate::opac::{KappaConfig, Material};
 use crate::opac::{
-    KappaError, KappaMethod, MaterialKind, RefractiveIndexKind, SizeDistribution, WavelengthKind,
+    AggregateStructure, KappaError, MaterialKind, ScatteringMethod, SizeDistribution,
+    WavelengthGrid,
 };
+use crate::opac::{KappaConfig, Material};
 
 /// Result of parsing CLI arguments.
 #[derive(Debug)]
@@ -295,8 +293,8 @@ pub struct Cli {
     pub nang: usize,
 
     /// Forward-scattering chopping angle in degrees.
-    #[arg(long, default_value_t = 0.0, help_heading = "Output")]
-    pub chop: f64,
+    #[arg(long, value_name = "DEG", help_heading = "Output")]
+    pub chop: Option<f64>,
 
     /// Write the full 6-element Mueller scattering matrix.
     #[arg(short = 's', long = "scatter", help_heading = "Output")]
@@ -380,7 +378,7 @@ impl Cli {
         Ok(CliAction::Run(Box::new(config)))
     }
 
-    /// Converts parsed CLI options into a [`KappaConfig`] ready for `prepare_inputs` and `initialize`.
+    /// Converts parsed CLI options into a [`KappaConfig`].
     ///
     /// # Errors
     /// Returns a [`KappaError`] if any material specification, distribution parameter, sparse range,
@@ -406,163 +404,126 @@ impl Cli {
         }
 
         if let Some(pcore) = self.porosity {
-            kpc.pcore = pcore;
+            kpc.core_porosity = pcore;
         }
-        kpc.pmantle = self.mantle_porosity.unwrap_or(kpc.pcore);
+        kpc.mantle_porosity = self.mantle_porosity.unwrap_or(kpc.core_porosity);
 
         // Size distribution
-        if let Some(path) = self.size_file {
-            let path_str = path.to_string_lossy().into_owned();
-            let (r, nr, moments) = read_sizedis_file(&path_str)?;
-            kpc.na = r.len();
-            kpc.r_file = r;
-            kpc.nr_file = nr;
-            kpc.ameans_file = moments;
-            kpc.sizedis_file = Some(path_str);
-            kpc.sizedis = SizeDistribution::File;
-        } else if let Some(size) = self.size {
-            kpc.amin = size;
-            kpc.amax = size;
-            kpc.na = 1;
-            kpc.sizedis = SizeDistribution::PowerLaw;
+        kpc.size_distribution = if let Some(path) = self.size_file {
+            let path_str = path.to_string_lossy();
+            let (r, nr, _) = read_sizedis_file(&path_str)?;
+            SizeDistribution::Tabulated {
+                radii: r.to_vec(),
+                weights: nr.to_vec(),
+                source: Some(path),
+            }
+        } else if let Some(radius) = self.size {
+            SizeDistribution::Monodisperse { radius }
+        } else if let Some(spec) = self.log_normal {
+            let (mean, sigma) = parse_pair(&spec, "--log-normal")?;
+            SizeDistribution::LogNormal {
+                min: self.amin,
+                max: self.amax,
+                mean,
+                sigma,
+                bins: self.na,
+            }
+        } else if let Some(spec) = self.normal {
+            let (mean, sigma) = parse_pair(&spec, "--normal")?;
+            SizeDistribution::Normal {
+                min: self.amin,
+                max: self.amax,
+                mean,
+                sigma,
+                bins: self.na,
+            }
         } else {
-            kpc.amin = self.amin;
-            kpc.amax = self.amax;
-            if let Some(na) = self.na {
-                kpc.na = na;
+            SizeDistribution::PowerLaw {
+                min: self.amin,
+                max: self.amax,
+                slope: self.apow,
+                bins: self.na,
             }
-            if let Some(spec) = self.log_normal {
-                let (mean, sigma) = parse_pair(&spec, "--log-normal")?;
-                if sigma <= 0.0 {
-                    return Err(anyhow!("`--log-normal` sigma must be positive").into());
-                }
-                kpc.amean = mean;
-                kpc.asigma = sigma;
-                kpc.sizedis = SizeDistribution::LogNormal;
-            } else if let Some(spec) = self.normal {
-                let (mean, sigma) = parse_pair(&spec, "--normal")?;
-                if sigma <= 0.0 {
-                    return Err(anyhow!("`--normal` sigma must be positive").into());
-                }
-                kpc.amean = mean;
-                kpc.asigma = -sigma;
-                kpc.sizedis = SizeDistribution::Normal;
-            } else {
-                kpc.apow = self.apow;
-                kpc.sizedis = SizeDistribution::PowerLaw;
-            }
-        }
+        };
 
         // Wavelength grid
-        if let Some(path) = self.lam_file {
+        kpc.wavelengths = if let Some(path) = self.lam_file {
             let path_str = path.to_string_lossy();
-            let (nlam, lam) = read_wavelength_grid(&path_str)?;
-            let min_lam = lam
-                .iter()
-                .copied()
-                .reduce(f64::min)
-                .ok_or_else(|| anyhow!("Empty wavelength grid file"))?;
-            let max_lam = lam
-                .iter()
-                .copied()
-                .reduce(f64::max)
-                .ok_or_else(|| anyhow!("Empty wavelength grid file"))?;
-            kpc.nlam = nlam;
-            kpc.lmin = min_lam;
-            kpc.lmax = max_lam;
-            kpc.lam = lam;
-            kpc.wavelength_kind = WavelengthKind::File;
-        } else if let Some(lam) = self.lam {
-            kpc.lmin = lam;
-            kpc.lmax = lam;
-            kpc.nlam = 1;
-            kpc.wavelength_kind = WavelengthKind::Other;
+            let (_, lam) = read_wavelength_grid(&path_str)?;
+            WavelengthGrid::Tabulated {
+                wavelengths: lam.to_vec(),
+            }
+        } else if let Some(wavelength) = self.lam {
+            WavelengthGrid::Single { wavelength }
         } else {
-            kpc.lmin = self.lmin;
-            kpc.lmax = self.lmax;
-            kpc.nlam = self.nlam;
-            kpc.wavelength_kind = WavelengthKind::Other;
-        }
+            WavelengthGrid::LogSpaced {
+                min: self.lmin,
+                max: self.lmax,
+                count: self.nlam,
+            }
+        };
 
         // Scattering method
-        match self.method {
-            MethodArg::Dhs => {
-                kpc.method = KappaMethod::DHS;
-                kpc.fmax = self.fmax;
-                kpc.xlim = self.xlim;
-                kpc.xlim_dhs = self.xlim_dhs;
-            }
-            MethodArg::Mie => {
-                kpc.method = KappaMethod::DHS;
-                kpc.fmax = 0.0;
-                kpc.xlim = self.xlim;
-                kpc.xlim_dhs = self.xlim_dhs;
-            }
+        kpc.method = match self.method {
+            MethodArg::Dhs => ScatteringMethod::Dhs {
+                fmax: self.fmax,
+                size_limit: self.xlim,
+                dhs_size_limit: self.xlim_dhs,
+            },
+            MethodArg::Mie => ScatteringMethod::Mie {
+                size_limit: self.xlim,
+            },
             MethodArg::Mmf => {
-                kpc.method = KappaMethod::MMF;
-                kpc.mmf_a0 = self.mmf_a0;
-                kpc.mmf_struct = if let Some(df) = self.mmf_df {
-                    if df <= 1.0 || df > 3.0 {
-                        return Err(anyhow!("`--mmf-df` must be in (1, 3]").into());
-                    }
-                    df
-                } else if let Some(fill) = self.mmf_fill {
-                    if fill <= 0.0 || fill > 1.0 {
-                        return Err(anyhow!("`--mmf-fill` must be in (0, 1]").into());
-                    }
-                    fill
+                let structure = if let Some(df) = self.mmf_df {
+                    AggregateStructure::FractalDimension(df)
                 } else {
-                    0.2
+                    AggregateStructure::FillingFactor(self.mmf_fill.unwrap_or(0.2))
                 };
-                kpc.mmf_kf = self.mmf_kf.unwrap_or(0.0);
-                kpc.mmf_ss = self.mmf_ss;
+                ScatteringMethod::Mmf {
+                    monomer_radius: self.mmf_a0,
+                    structure,
+                    prefactor: self.mmf_kf,
+                    keep_approximate_scattering: self.mmf_ss,
+                }
             }
-            MethodArg::Cde => {
-                kpc.method = KappaMethod::CDE;
-            }
-        }
+            MethodArg::Cde => ScatteringMethod::Cde,
+        };
 
         // Angular grid & output
-        kpc.nang = self.nang;
+        kpc.n_angles = self.nang;
         kpc.chop_angle = self.chop;
         kpc.write_scatter = self.scatter || !self.sparse.is_empty();
         kpc.for_radmc = self.radmc;
+        kpc.split_subgrains = self.split;
         kpc.write_grid = self.write_grid;
         kpc.blend_only = self.blend_only;
-        kpc.outdir = self.outdir.to_string_lossy().into_owned();
+        kpc.outdir = self.outdir;
         kpc.label = self.label;
         kpc.quiet = self.quiet;
 
-        if let Some(nsub) = self.split {
-            kpc.split = true;
-            kpc.nsubgrains = nsub;
-        }
-
         for range_spec in &self.sparse {
-            if kpc.nsparse >= kpc.scatlammin.len() {
-                return Err(anyhow!("Too many `--sparse` intervals").into());
-            }
             let (l1, l2) = if let Some((a, b)) = range_spec.split_once(':') {
-                let v1 = a
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid `--sparse` start wavelength: `{a}`"))?;
-                let v2 = b
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid `--sparse` end wavelength: `{b}`"))?;
+                let v1 = a.parse::<f64>().map_err(|_| {
+                    KappaError::InvalidConfig(format!("invalid `--sparse` start wavelength: `{a}`"))
+                })?;
+                let v2 = b.parse::<f64>().map_err(|_| {
+                    KappaError::InvalidConfig(format!("invalid `--sparse` end wavelength: `{b}`"))
+                })?;
                 if v1 <= v2 { (v1, v2) } else { (v2, v1) }
             } else {
-                let v = range_spec
-                    .parse::<f64>()
-                    .map_err(|_| anyhow!("Invalid `--sparse` wavelength: `{range_spec}`"))?;
+                let v = range_spec.parse::<f64>().map_err(|_| {
+                    KappaError::InvalidConfig(format!(
+                        "invalid `--sparse` wavelength: `{range_spec}`"
+                    ))
+                })?;
                 (v, v)
             };
             if l1 <= 0.0 || l2 <= 0.0 {
-                return Err(anyhow!("`--sparse` wavelengths must be positive").into());
+                return Err(KappaError::InvalidConfig(
+                    "`--sparse` wavelengths must be positive".into(),
+                ));
             }
-            let idx = kpc.nsparse;
-            kpc.scatlammin[idx] = l1;
-            kpc.scatlammax[idx] = l2;
-            kpc.nsparse += 1;
+            kpc.sparse_ranges.push((l1, l2));
         }
 
         Ok(kpc)
@@ -572,11 +533,13 @@ impl Cli {
 /// Parses `<key|file.lnk|n:k:rho>[=mfrac]`. Returns `Ok(None)` if `mfrac == 0.0`.
 fn parse_material_spec(spec: &str, kind: MaterialKind) -> Result<Option<Material>, KappaError> {
     let (target, mfrac) = if let Some((lhs, rhs)) = spec.rsplit_once('=') {
-        let frac = rhs
-            .parse::<f64>()
-            .map_err(|_| anyhow!("Invalid mass fraction `{rhs}` in material `{spec}`"))?;
+        let frac = rhs.parse::<f64>().map_err(|_| {
+            KappaError::InvalidConfig(format!("invalid mass fraction `{rhs}` in `{spec}`"))
+        })?;
         if frac < 0.0 || !frac.is_finite() {
-            return Err(anyhow!("Mass fraction must be non-negative in `{spec}`").into());
+            return Err(KappaError::InvalidConfig(format!(
+                "mass fraction must be non-negative in `{spec}`"
+            )));
         }
         if frac == 0.0 {
             return Ok(None);
@@ -586,69 +549,51 @@ fn parse_material_spec(spec: &str, kind: MaterialKind) -> Result<Option<Material
         (spec, 1.0)
     };
 
-    let mut material = Material {
-        kind,
-        mfrac,
-        ..Default::default()
-    };
-
     if try_get_lnk_data(target).is_some() {
-        material.key = target.to_string();
-        material.cmd = RefractiveIndexKind::Other;
+        Ok(Some(Material::builtin(target, kind, mfrac)))
     } else if Path::new(target)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("lnk"))
     {
-        material.key = target.to_string();
-        material.cmd = RefractiveIndexKind::File;
+        Ok(Some(Material::lnk_file(target, kind, mfrac)))
     } else if target.contains(':') {
         let parts: Vec<&str> = target.split(':').collect();
         if parts.len() != 3 {
-            return Err(
-                anyhow!("Expected `n:k:rho` for constant optical constants, got `{target}`").into(),
-            );
+            return Err(KappaError::InvalidConfig(format!(
+                "expected `n:k:rho` for constant optical constants, got `{target}`"
+            )));
         }
-        material.n = parts[0]
-            .parse::<f64>()
-            .map_err(|_| anyhow!("Invalid refractive index `n` in `{target}`"))?;
-        material.k = parts[1]
-            .parse::<f64>()
-            .map_err(|_| anyhow!("Invalid extinction coefficient `k` in `{target}`"))?;
-        material.rho = parts[2]
-            .parse::<f64>()
-            .map_err(|_| anyhow!("Invalid density `rho` in `{target}`"))?;
-        if material.rho <= 0.0 {
-            return Err(anyhow!("Material density `rho` must be positive in `{target}`").into());
-        }
-        material.key = target.to_string();
-        material.cmd = RefractiveIndexKind::CmdLine;
+        let n = parts[0].parse::<f64>().map_err(|_| {
+            KappaError::InvalidConfig(format!("invalid refractive index `n` in `{target}`"))
+        })?;
+        let k = parts[1].parse::<f64>().map_err(|_| {
+            KappaError::InvalidConfig(format!("invalid extinction coefficient `k` in `{target}`"))
+        })?;
+        let density = parts[2].parse::<f64>().map_err(|_| {
+            KappaError::InvalidConfig(format!("invalid density `rho` in `{target}`"))
+        })?;
+        Ok(Some(Material::constant(n, k, density, kind, mfrac)))
     } else {
-        return Err(anyhow!(
-            "Unknown material `{target}`. Run `kappa materials` to list built-in keys, or pass a `.lnk` file or `n:k:rho`."
-        )
-        .into());
+        Err(KappaError::UnknownMaterial(target.to_string()))
     }
-
-    Ok(Some(material))
 }
 
 fn parse_pair(spec: &str, flag: &str) -> Result<(f64, f64), KappaError> {
-    let (lhs, rhs) = spec
-        .split_once(':')
-        .ok_or_else(|| anyhow!("{flag} expects `MEAN:SIGMA`, got `{spec}`"))?;
+    let (lhs, rhs) = spec.split_once(':').ok_or_else(|| {
+        KappaError::InvalidConfig(format!("{flag} expects `MEAN:SIGMA`, got `{spec}`"))
+    })?;
     let a = lhs
         .parse::<f64>()
-        .map_err(|_| anyhow!("Invalid mean in {flag}: `{lhs}`"))?;
+        .map_err(|_| KappaError::InvalidConfig(format!("invalid mean in {flag}: `{lhs}`")))?;
     let b = rhs
         .parse::<f64>()
-        .map_err(|_| anyhow!("Invalid sigma in {flag}: `{rhs}`"))?;
+        .map_err(|_| KappaError::InvalidConfig(format!("invalid sigma in {flag}: `{rhs}`")))?;
     Ok((a, b))
 }
 
 fn inspect_material(key: &str) -> Result<(), KappaError> {
-    let comp = try_get_lnk_data(key).ok_or_else(|| {
-        anyhow!("Unknown material key `{key}`. Run `kappa materials` to list all keys.")
-    })?;
+    let comp =
+        try_get_lnk_data(key).ok_or_else(|| KappaError::UnknownMaterial(key.to_string()))?;
     println!("{}: {}", "Key".bold(), key.green());
     println!("{}: {}", "Name".bold(), comp.name);
     println!("{}: {}", "Class".bold(), comp.class);
@@ -696,7 +641,10 @@ mod tests {
     use approx::assert_relative_eq;
     use clap::Parser;
 
-    use crate::opac::{KappaMethod, MaterialKind, RefractiveIndexKind, SizeDistribution};
+    use crate::opac::{
+        AggregateStructure, MaterialKind, MaterialSource, ScatteringMethod, SizeDistribution,
+        WavelengthGrid,
+    };
 
     use super::{Cli, CliAction};
 
@@ -705,9 +653,11 @@ mod tests {
         let cli = Cli::try_parse_from(["kappa"]).unwrap();
         let cfg = cli.into_config().unwrap();
         assert_eq!(cfg.materials.len(), 2);
-        assert_relative_eq!(cfg.pcore, 0.25);
-        assert!(matches!(cfg.method, KappaMethod::DHS));
-        assert_relative_eq!(cfg.fmax, 0.8);
+        assert_relative_eq!(cfg.core_porosity, 0.25);
+        assert!(matches!(
+            cfg.method,
+            ScatteringMethod::Dhs { fmax, .. } if (fmax - 0.8).abs() < 1e-12
+        ));
     }
 
     #[test]
@@ -734,14 +684,13 @@ mod tests {
         ])
         .unwrap();
         let cfg = cli.into_config().unwrap();
-        assert_eq!(cfg.nlam, 1);
-        assert_relative_eq!(cfg.lmin, 10.0);
-        assert_relative_eq!(cfg.fmax, 0.0);
-        assert_relative_eq!(cfg.pcore, 0.1);
-        assert_relative_eq!(cfg.pmantle, 0.05);
+        assert_eq!(cfg.wavelengths, WavelengthGrid::Single { wavelength: 10.0 });
+        assert!(matches!(cfg.method, ScatteringMethod::Mie { .. }));
+        assert_relative_eq!(cfg.core_porosity, 0.1);
+        assert_relative_eq!(cfg.mantle_porosity, 0.05);
         assert_eq!(cfg.materials.len(), 3);
         assert_eq!(cfg.materials[2].kind, MaterialKind::Mantle);
-        assert_relative_eq!(cfg.materials[2].mfrac, 0.2);
+        assert_relative_eq!(cfg.materials[2].mass_fraction, 0.2);
         assert!(cfg.write_scatter);
         assert!(cfg.for_radmc);
         assert_eq!(cfg.label, "custom");
@@ -780,45 +729,49 @@ mod tests {
             "20.0:40.0",
         ])
         .unwrap();
-        let mut cfg = cli.into_config().unwrap();
-        assert_eq!(cfg.materials[0].cmd, RefractiveIndexKind::CmdLine);
-        assert_relative_eq!(cfg.materials[0].n, 1.5);
-        assert_relative_eq!(cfg.materials[0].k, 0.01);
-        assert_relative_eq!(cfg.materials[0].rho, 2.5);
-        assert_eq!(cfg.sizedis, SizeDistribution::LogNormal);
-        assert!(matches!(cfg.method, KappaMethod::MMF));
-        assert_relative_eq!(cfg.mmf_struct, 2.2);
-        assert_eq!(cfg.nsparse, 2);
+        let cfg = cli.into_config().unwrap();
+        assert_eq!(
+            cfg.materials[0].source,
+            MaterialSource::Constant {
+                n: 1.5,
+                k: 0.01,
+                density: 2.5
+            }
+        );
+        assert!(matches!(
+            cfg.size_distribution,
+            SizeDistribution::LogNormal { .. }
+        ));
+        assert!(matches!(
+            cfg.method,
+            ScatteringMethod::Mmf {
+                structure: AggregateStructure::FractalDimension(df),
+                ..
+            } if (df - 2.2).abs() < 1e-12
+        ));
+        assert_eq!(cfg.sparse_ranges.len(), 2);
         assert!(cfg.write_scatter);
 
-        // Deferred initialization must size CmdLine arrays to nlam = 12 without panicking
-        cfg.prepare_inputs().unwrap();
-        cfg.initialize().unwrap();
-        assert_eq!(cfg.materials[0].re.len(), 12);
+        let prepared = cfg.prepare().unwrap();
+        assert_eq!(prepared.wavelengths().len(), 12);
     }
 
     #[test]
     fn split_optional_value_and_conflicts_and_subcommand() {
-        // --split without argument defaults to 5
         let c1 = Cli::try_parse_from(["kappa", "--split"]).unwrap();
         let cfg1 = c1.into_config().unwrap();
-        assert!(cfg1.split);
-        assert_eq!(cfg1.nsubgrains, 5);
+        assert_eq!(cfg1.split_subgrains, Some(5));
 
-        // --split with explicit value
         let c2 = Cli::try_parse_from(["kappa", "--split", "9"]).unwrap();
         let cfg2 = c2.into_config().unwrap();
-        assert!(cfg2.split);
-        assert_eq!(cfg2.nsubgrains, 9);
+        assert_eq!(cfg2.split_subgrains, Some(9));
 
-        // Conflicting flags rejected by clap
         assert!(Cli::try_parse_from(["kappa", "--mmf-df", "2.0", "--mmf-fill", "0.2"]).is_err());
         assert!(
             Cli::try_parse_from(["kappa", "--log-normal", "1:0.2", "--normal", "1:0.2"]).is_err()
         );
         assert!(Cli::try_parse_from(["kappa", "--unknown-flag"]).is_err());
 
-        // Materials subcommand completes directly without running opacities
         let sub = Cli::try_parse_from(["kappa", "materials", "pyr"]).unwrap();
         assert!(matches!(sub.into_action().unwrap(), CliAction::Done));
     }

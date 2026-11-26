@@ -801,7 +801,7 @@ fn mean_field(fracc: &FractalConfig, ad: &CMatrix, x_g: f64, nmax: usize) -> Res
     }
 
     // Solve S * r = y for mean-field scattering coefficients r
-    let r = linalg::complex_matrix_inverse(pmax, 2 * pmax, &y, &s).context("SingularMatrix")?;
+    let r = linalg::complex_matrix_inverse(pmax, &y, &s).context("SingularMatrix")?;
 
     Ok(r)
 }
