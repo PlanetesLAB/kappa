@@ -155,7 +155,12 @@ pub fn launch() -> Result<KappaConfig, KappaError> {
                 }
                 SizeArg::File(file) => {
                     // Read file
-                    (kpc.na, kpc.ameans_file) = read_sizedis_file(&file)?;
+                    let (r, nr, moments) = read_sizedis_file(&file)?;
+                    kpc.na = r.len();
+                    kpc.r_file = r;
+                    kpc.nr_file = nr;
+                    kpc.ameans_file = moments;
+                    kpc.sizedis_file = Some(file);
                     kpc.sizedis = SizeDistribution::File;
                 }
             },

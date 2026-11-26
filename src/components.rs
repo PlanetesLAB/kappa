@@ -68,50 +68,57 @@ pub const MATERIAL_KEYS: &[&str] = &[
     "ch3oh-c",
 ];
 
+/// Returns a reference to the [`StaticComponent`] corresponding to the given `key`,
+/// or `None` if the key is unknown.
+#[must_use]
+pub fn try_get_lnk_data(key: &str) -> Option<&'static StaticComponent> {
+    match key {
+        "astrosil" => Some(&ASTROSIL),
+        "c" | "c-z" => Some(&C_Z),
+        "c-p" => Some(&C_P),
+        "gra" | "c-gra" => Some(&C_GRA),
+        "org" | "c-org" => Some(&C_ORG),
+        "nano" | "c-nano" => Some(&C_NANO),
+        "ch3oh" | "ch3oh-a" => Some(&CH3OH_A),
+        "ch3oh-c" => Some(&CH3OH_C),
+        "ch4" | "ch4-a" => Some(&CH4_A),
+        "ch4-c" => Some(&CH4_C),
+        "co" | "co-a" => Some(&CO_A),
+        "co2-a" => Some(&CO2_A),
+        "co2-c" => Some(&CO2_C),
+        "co2" | "co2-w" => Some(&CO2_W),
+        "cor" | "cor-c" => Some(&COR_C),
+        "iron" | "fe-c" => Some(&FE_C),
+        "tro" | "fes" => Some(&FES),
+        "h2o" | "h2o-w" | "ice-w" => Some(&H2O_W),
+        "h2o-a" => Some(&H2O_A),
+        "nh3" | "nh3-m" => Some(&NH3_M),
+        "fay" | "ol-c-mg00" => Some(&OL_C_MG00),
+        "for" | "ol-c-mg100" => Some(&OL_C_MG100),
+        "ol" | "ol-mg50" => Some(&OL_MG50),
+        "ol-c-mg95" => Some(&OL_C_MG95),
+        "ol-mg40" => Some(&OL_MG40),
+        "ens" | "pyr-c-mg96" => Some(&PYR_C_MG96),
+        "pyr-mg100" => Some(&PYR_MG100),
+        "pyr-mg95" => Some(&PYR_MG95),
+        "pyr-mg80" => Some(&PYR_MG80),
+        "pyr-mg70" | "pyr" => Some(&PYR_MG70),
+        "pyr-mg60" => Some(&PYR_MG60),
+        "pyr-mg50" => Some(&PYR_MG50),
+        "pyr-mg40" => Some(&PYR_MG40),
+        "sic" => Some(&SIC),
+        "qua" | "sio2" => Some(&SIO2),
+        _ => None,
+    }
+}
+
 /// Returns a reference to the [`StaticComponent`] corresponding to the given `key`.
 ///
 /// # Panics
 /// Panics if the `key` does not correspond to any known component.
 #[must_use]
 pub fn get_lnk_data(key: &str) -> &StaticComponent {
-    match key {
-        "astrosil" => &ASTROSIL,
-        "c" | "c-z" => &C_Z,
-        "c-p" => &C_P,
-        "gra" | "c-gra" => &C_GRA,
-        "org" | "c-org" => &C_ORG,
-        "nano" | "c-nano" => &C_NANO,
-        "ch3oh-a" => &CH3OH_A,
-        "ch3oh-c" => &CH3OH_C,
-        "ch4-a" => &CH4_A,
-        "ch4-c" => &CH4_C,
-        "co" | "co-a" => &CO_A,
-        "co2-a" => &CO2_A,
-        "co2-c" => &CO2_C,
-        "co2" | "co2-w" => &CO2_W,
-        "cor" | "cor-c" => &COR_C,
-        "iron" | "fe-c" => &FE_C,
-        "tro" | "fes" => &FES,
-        "h2o" | "h2o-w" | "ice-w" => &H2O_W,
-        "h2o-a" => &H2O_A,
-        "nh3" | "nh3-m" => &NH3_M,
-        "fay" | "ol-c-mg00" => &OL_C_MG00,
-        "for" | "ol-c-mg100" => &OL_C_MG100,
-        "ol" | "ol-mg50" => &OL_MG50,
-        "ol-c-mg95" => &OL_C_MG95,
-        "ol-mg40" => &OL_MG40,
-        "ens" | "pyr-c-mg96" => &PYR_C_MG96,
-        "pyr-mg100" => &PYR_MG100,
-        "pyr-mg95" => &PYR_MG95,
-        "pyr-mg80" => &PYR_MG80,
-        "pyr-mg70" | "pyr" => &PYR_MG70,
-        "pyr-mg60" => &PYR_MG60,
-        "pyr-mg50" => &PYR_MG50,
-        "pyr-mg40" => &PYR_MG40,
-        "sic" => &SIC,
-        "qua" | "sio2" => &SIO2,
-        _ => panic!("No data for key {key}"),
-    }
+    try_get_lnk_data(key).unwrap_or_else(|| panic!("No data for key {key}"))
 }
 
 /// Defines a material component which is statically defined.
@@ -30110,7 +30117,7 @@ static L0_CO2_W: &[f64; 945] = &[
     7.666E+00, 7.707E+00, 7.727E+00, 7.768E+00, 7.81E+00, 7.852E+00, 7.894E+00, 7.937E+00,
     7.959E+00, 7.981E+00, 8.003E+00, 8.025E+00, 8.047E+00, 8.069E+00, 8.114E+00, 8.159E+00,
     8.182E+00, 8.205E+00, 8.228E+00, 8.275E+00, 8.299E+00, 8.322E+00, 8.346E+00, 8.394E+00,
-    8.443E+00, 8.492E+00, 8.542E+00, 8.6E+00, 8.65E+00, 8.7E+00, 8.75E+00, 8.76E+00, 8.6E+00,
+    8.443E+00, 8.492E+00, 8.542E+00, 8.6E+00, 8.65E+00, 8.7E+00, 8.75E+00, 8.76E+00, 8.8E+00,
     8.84E+00, 8.88E+00, 8.92E+00, 8.94E+00, 8.96E+00, 9E+00, 9.1E+00, 9.2E+00, 9.4E+00, 9.6E+00,
     9.63E+00, 9.66E+00, 9.7E+00, 9.75E+00, 9.8E+00, 9.88E+00, 9.9E+00, 1E+01, 1.01E+01, 1.02E+01,
     1.03E+01, 1.04E+01, 1.05E+01, 1.06E+01, 1.07E+01, 1.08E+01, 1.09E+01, 1.1E+01, 1.15E+01,
@@ -78276,3 +78283,55 @@ pub static SIO2: StaticComponent = StaticComponent {
     n0: N0_SIO2,
     k0: K0_SIO2,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::MATERIAL_KEYS;
+    use super::{get_lnk_data, try_get_lnk_data};
+
+    #[test]
+    fn all_material_keys_resolve_and_tables_are_valid() {
+        for &key in MATERIAL_KEYS {
+            let comp = try_get_lnk_data(key)
+                .unwrap_or_else(|| panic!("MATERIAL_KEYS entry `{key}` missing from lookup"));
+            assert_eq!(comp.size, comp.l0.len(), "{key}: size != l0.len()");
+            assert_eq!(comp.size, comp.n0.len(), "{key}: size != n0.len()");
+            assert_eq!(comp.size, comp.k0.len(), "{key}: size != k0.len()");
+            assert!(comp.rho > 0.0 && comp.rho.is_finite(), "{key}: invalid rho");
+            assert!(comp.size >= 2, "{key}: too few wavelengths");
+
+            for i in 0..comp.size {
+                assert!(
+                    comp.l0[i] > 0.0 && comp.l0[i].is_finite(),
+                    "{key}: invalid l0[{i}] = {}",
+                    comp.l0[i]
+                );
+                assert!(
+                    comp.n0[i] > 0.0 && comp.n0[i].is_finite(),
+                    "{key}: invalid n0[{i}] = {}",
+                    comp.n0[i]
+                );
+                assert!(
+                    comp.k0[i] > 0.0 && comp.k0[i].is_finite(),
+                    "{key}: invalid k0[{i}] = {}",
+                    comp.k0[i]
+                );
+                if i > 0 {
+                    assert!(
+                        comp.l0[i] >= comp.l0[i - 1],
+                        "{key}: decreasing l0 at index {i}: {} < {}",
+                        comp.l0[i],
+                        comp.l0[i - 1]
+                    );
+                }
+            }
+            assert!(
+                comp.l0[comp.size - 1] > comp.l0[comp.size - 2],
+                "{key}: trailing duplicate l0 breaks long-wavelength extrapolation"
+            );
+        }
+        assert!(try_get_lnk_data("nonexistent-material").is_none());
+        let _ = get_lnk_data("ch4");
+        let _ = get_lnk_data("ch3oh");
+    }
+}
