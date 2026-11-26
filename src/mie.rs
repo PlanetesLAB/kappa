@@ -4,8 +4,7 @@
 //! [De Rooij & Van der Stap (1984)](https://ui.adsabs.harvard.edu/abs/1984A%26A...131..237D/abstract),
 //! with series truncation following
 //! [Wiscombe (1980)](https://ui.adsabs.harvard.edu/abs/1980ApOpt..19.1505W/abstract)
-//! and Bohren & Huffman (1983, *Absorption and Scattering of Light by Small
-//! Particles*, Wiley).
+//! and [Bohren & Huffman (1983)](https://ui.adsabs.harvard.edu/abs/1983asls.book.....B/abstract).
 //!
 //! Callers supply the complex refractive index as $m = n + i k$ ($k \ge 0$);
 //! [`de_rooij_1984`] conjugates it internally to $m^{*} = n - i k$ to match
@@ -13,7 +12,8 @@
 //! homogeneous spheres satisfy $F_{22}(\theta) = F_{11}(\theta)$ and
 //! $F_{44}(\theta) = F_{33}(\theta)$, only the four independent Mueller matrix
 //! elements $F_{11}, F_{12}, F_{33}, F_{34}$ are returned, normalized in the
-//! Hovenier et al. (2004) convention:
+//! [Hovenier et al. (2004)](https://ui.adsabs.harvard.edu/abs/2004ASSL..318.....H/abstract)
+//! convention:
 //! $$\frac{1}{2} \int_{0}^{\pi} F_{11}(\theta) \sin\theta \thinspace \mathrm{d}\theta = 1.$$
 #![allow(clippy::inline_always)]
 
