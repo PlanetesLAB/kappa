@@ -1,6 +1,30 @@
-//! Distribution of Hollow Spheres (DHS) concentric-sphere scattering solver.
+//! Concentric core-shell sphere scattering solver for the Distribution of
+//! Hollow Spheres (DHS).
 //!
-//! Implements the stratified-sphere algorithm of Toon & Ackerman (1981).
+//! Implements the stratified-sphere algorithm of
+//! [Toon & Ackerman (1981)](https://ui.adsabs.harvard.edu/abs/1981ApOpt..20.3657T/abstract),
+//! used by [`crate::opac`] to evaluate the DHS dust opacity model of
+//! [Min, Hovenier & de Koter (2005)](https://ui.adsabs.harvard.edu/abs/2005A%26A...432..909M/abstract)
+//! by setting the inner core to vacuum ($m_{\mathrm{core}} = 1 + 0i$) and
+//! averaging over cavity volume fractions
+//! $f = (r_{\mathrm{core}} / r_{\mathrm{shell}})^{3} \in [0, f_{\max}]$.
+//!
+//! # Conventions
+//!
+//! - **Refractive index:** Follows the $e^{+i \omega t}$ harmonic time
+//!   convention, requiring $\operatorname{Re}(m) > 0$ and
+//!   $\operatorname{Im}(m) \le 0$.
+//! - **Angular layout:** Callers pass forward-hemisphere cosines
+//!   $\cos\theta_{j} \in [0, 1]$. Output matrices have shape `(n_angles, 2)`,
+//!   where column `0` holds $\theta_{j} \in [0, \pi/2]$ and column `1` holds
+//!   the supplementary angle $\pi - \theta_{j} \in [\pi/2, \pi]$.
+//! - **Mueller matrix mapping:** From the unnormalized scattering intensities
+//!   in [`DhsResult`], the normalized
+//!   [Hovenier et al. (2004)](https://ui.adsabs.harvard.edu/abs/2004ASSL..318.....H/abstract)
+//!   elements are
+//!   $$F_{11} = \gamma (i_{2} + i_{1}), \quad F_{12} = \gamma (i_{2} - i_{1}), \quad F_{33} = 2 \gamma s_{21}, \quad F_{34} = -2 \gamma d_{21},$$
+//!   with $\gamma = 2\pi / (C_{\mathrm{sca}} k^{2})$ and
+//!   $C_{\mathrm{sca}} = Q_{\mathrm{sca}} \pi r_{\mathrm{shell}}^{2}$.
 #![allow(clippy::inline_always)]
 
 use std::f64::consts::PI;
@@ -11,40 +35,94 @@ use num_complex::ComplexFloat;
 use num_complex::{Complex, Complex64};
 use planetes_ext::types::{CMatrix, CVector, RMatrix, RVector};
 
-/// Input parameters for electromagnetic scattering by a concentric core-shell sphere.
+/// Input parameters for electromagnetic scattering by a concentric core-shell
+/// sphere.
 #[derive(Debug)]
 pub struct DhsConfig<'a> {
+    /// Inner core radius $r_{\mathrm{core}}$, satisfying
+    /// $0 < r_{\mathrm{core}} \le r_{\mathrm{shell}}$ (same length unit as
+    /// `wave_number`$^{-1}$, typically $\mu\mathrm{m}$).
     pub r_core: f64,
+    /// Outer shell radius $r_{\mathrm{shell}} > 0$ (same length unit as
+    /// `r_core`).
     pub r_shell: f64,
+    /// Incident wavenumber $k = 2\pi / \lambda > 0$ (inverse of the radius
+    /// length unit).
     pub wave_number: f64,
+    /// Complex refractive index of the outer shell $m_{\mathrm{shell}}$ in the
+    /// $e^{+i \omega t}$ convention ($\operatorname{Re} > 0$,
+    /// $\operatorname{Im} \le 0$).
     pub m_shell: Complex64,
+    /// Complex refractive index of the inner core $m_{\mathrm{core}}$ in the
+    /// $e^{+i \omega t}$ convention ($\operatorname{Re} > 0$,
+    /// $\operatorname{Im} \le 0$; $1 + 0i$ for a vacuum cavity).
     pub m_core: Complex64,
+    /// Forward-hemisphere angle cosines $\mu_{j} = \cos\theta_{j} \in [0, 1]$
+    /// of length at least `n_angles`.
     pub cos_theta: &'a RVector,
+    /// Number of forward-hemisphere angles $N_{\theta}$ to evaluate
+    /// ($\le \min(\mathrm{max\_angle}, 1440)$).
     pub n_angles: usize,
+    /// Caller-imposed upper bound on `n_angles`.
     pub max_angle: usize,
 }
 
-/// Output efficiencies and unnormalized scattering intensities from Toon & Ackerman (1981).
+/// Output efficiencies and unnormalized scattering intensities from
+/// [`toon_ackerman_1981`].
 #[derive(Debug)]
 pub struct DhsResult {
+    /// Dimensionless extinction efficiency
+    /// $Q_{\mathrm{ext}} = C_{\mathrm{ext}} / (\pi r_{\mathrm{shell}}^{2})$.
     pub q_ext: f64,
+    /// Dimensionless scattering efficiency
+    /// $Q_{\mathrm{sca}} = C_{\mathrm{sca}} / (\pi r_{\mathrm{shell}}^{2})$.
     pub q_sca: f64,
+    /// Dimensionless backscattering efficiency
+    /// $Q_{\mathrm{back}} = \frac{1}{\pi x_{\mathrm{shell}}^{2}} \left|\frac{1}{2} \sum_{n=1}^{N} (-1)^{n} (2n + 1)(a_{n} - b_{n})\right|^{2}$.
     pub q_back: f64,
+    /// Asymmetry-weighted scattering efficiency
+    /// $g Q_{\mathrm{sca}} = \langle \cos\theta \rangle Q_{\mathrm{sca}}$.
     pub g_q_sca: f64,
+    /// Unnormalized perpendicular intensity $|S_{1}|^{2}$ of shape
+    /// `(n_angles, 2)` (column `0`: $\theta_{j}$; column `1`: $\pi - \theta_{j}$).
     pub i1: RMatrix,
+    /// Unnormalized parallel intensity $|S_{2}|^{2}$ of shape `(n_angles, 2)`.
     pub i2: RMatrix,
+    /// Amplitude cross term $\operatorname{Re}(S_{1} S_{2}^{*})$ of shape
+    /// `(n_angles, 2)`.
     pub s21: RMatrix,
+    /// Amplitude cross term
+    /// $\operatorname{Im}(S_{1} S_{2}^{*}) = \operatorname{Re}(S_{2})\operatorname{Im}(S_{1}) - \operatorname{Re}(S_{1})\operatorname{Im}(S_{2})$
+    /// of shape `(n_angles, 2)`.
     pub d21: RMatrix,
 }
 
-/// Computes electromagnetic scattering by a concentric core-shell sphere using Toon & Ackerman
-/// (1981), *Appl. Opt.* 20, 3657.
+/// Computes electromagnetic scattering by a concentric core-shell sphere using
+/// the stabilized ratio formulation of
+/// [Toon & Ackerman (1981)](https://ui.adsabs.harvard.edu/abs/1981ApOpt..20.3657T/abstract).
 ///
-/// Refractive indices follow the $e^{+i\omega t}$ convention ($\operatorname{Im}(m) \le 0$).
+/// Evaluates the logarithmic derivatives of the Riccati-Bessel functions by
+/// downward recurrence for the four complex size arguments
+/// $m_{\mathrm{shell}} x_{\mathrm{shell}}$, $x_{\mathrm{shell}}$,
+/// $m_{\mathrm{core}} x_{\mathrm{core}}$, and
+/// $m_{\mathrm{shell}} x_{\mathrm{core}}$, where
+/// $x_{\mathrm{shell}} = k r_{\mathrm{shell}}$ and
+/// $x_{\mathrm{core}} = k r_{\mathrm{core}}$. The truncation bound is derived
+/// from $\max(x_{\mathrm{shell}}, |m_{\mathrm{shell}}| x_{\mathrm{shell}})$
+/// following [Wiscombe (1980)](https://ui.adsabs.harvard.edu/abs/1980ApOpt..19.1505W/abstract)
+/// so that shells with $|m_{\mathrm{shell}}| \le 1$ remain well-converged.
+/// Multipole summation terminates once $|a_{n}|^{2} + |b_{n}|^{2} < 10^{-14}$,
+/// accumulating forward ($\theta_{j}$) and backward ($\pi - \theta_{j}$)
+/// scattering amplitudes simultaneously via the parity of $\pi_{n}$ and
+/// $\tau_{n}$.
 ///
 /// # Errors
-/// Returns an error if input radii, wavenumber, refractive indices, or angle cosines are invalid,
-/// or if the required series order exceeds internal dimension bounds.
+/// Returns an error if:
+/// - `wave_number <= 0`, `r_shell <= 0`, or `r_core` is outside $(0, r_{\mathrm{shell}}]$;
+/// - `m_shell` or `m_core` violates $\operatorname{Re}(m) > 0$ or $\operatorname{Im}(m) \le 0$;
+/// - `n_angles` exceeds `max_angle`, `cos_theta.len()`, or the internal limit of $1440$;
+/// - any entry of `cos_theta[..n_angles]` lies outside $[0, 1]$ (within $10^{-6}$);
+/// - the required series dimension exceeds $3 \times 10^{5}$ or fails to converge within the allocated bound.
 #[allow(clippy::similar_names)]
 #[inline(always)]
 pub fn toon_ackerman_1981(dhs_cfg: &DhsConfig) -> Result<DhsResult> {
