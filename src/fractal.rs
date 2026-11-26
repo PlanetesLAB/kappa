@@ -794,8 +794,8 @@ fn mean_field(fracc: &FractalConfig, ad: &CMatrix, x_g: f64, nmax: usize) -> Res
 
 /// Computes the aggregate geometric cross section $G$ using the interpolation
 /// formula of [Okuzumi et al. (2009)](https://ui.adsabs.harvard.edu/abs/2009ApJ...707.1247O/abstract)
-/// with BCCA oblique-collision parameters ($k_{0,\mathrm{BCCA}} = 1.04$,
-/// $d_{f,\mathrm{BCCA}} = 1.90$;
+/// with ballistic cluster-cluster aggregation (BCCA) oblique-collision
+/// parameters ($k_{0,\mathrm{BCCA}} = 1.04$, $d_{f,\mathrm{BCCA}} = 1.90$;
 /// [Tazaki et al. 2016](https://ui.adsabs.harvard.edu/abs/2016ApJ...823...70T/abstract))
 /// and the [Minato et al. (2006)](https://ui.adsabs.harvard.edu/abs/2006A%26A...452..701M/abstract)
 /// fitting formula for $N \le 16$, capped at the non-overlapping monomer sum
