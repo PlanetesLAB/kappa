@@ -160,7 +160,7 @@ pub enum FractalGeometry {
 pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
     let k = 2.0 * PI / fracc.lmd; // Wavenumber
     let r_g = fracc.r0 * (fracc.pn / fracc.k0).powf(1.0 / fracc.df); // Radius of gyration of the aggregate
-    let r_c = (5.0f64 / 3.0f64).powf(r_g); // Characteristic radius of the aggregate
+    let r_c = (5.0f64 / 3.0f64).sqrt() * r_g; // Characteristic radius of the aggregate
     let x_g = k * r_g; // Size parameter of the aggregate
     let x0 = k * fracc.r0; // Size parameter of the monomer
 
@@ -169,7 +169,7 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
 
     // Truncation order of the monomer's scattering field
     let xmax = x0 + 4.0 * x0.powf(1.0 / 3.0) + 2.0;
-    let nmax = xmax as usize;
+    let nmax = xmax.round() as usize;
 
     if fracc.nang <= 1 {
         return Err(anyhow!("LowScatteringAngleResolution"));
@@ -226,8 +226,8 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
         FractalSolver::MeanField | FractalSolver::ModifiedMeanField => {
             let r = mean_field(fracc, &ad, x_g, nmax)?;
             for n in 0..nmax {
-                dd[[n, 0]] = r[2 * n - 1];
-                dd[[n, 1]] = r[2 * n];
+                dd[[n, 0]] = r[2 * n];
+                dd[[n, 1]] = r[2 * n + 1];
             }
         }
     }
@@ -235,21 +235,23 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
     let dang = PI / 2.0 / (fracc.nang - 1) as f64;
     let (s1, s2) = renormalize(fracc, &dd, dang, nmax);
 
-    let mut smat = RMatrix::zeros((2 * fracc.nang, 4));
-    let ang = (0..(2 * fracc.nang))
+    let n_ang_full = 2 * fracc.nang - 1;
+    let mut smat = RMatrix::zeros((n_ang_full, 4));
+    let ang = (0..n_ang_full)
         .map(|j| j as f64 * dang)
         .collect::<RVector>();
 
-    for j in 0..(2 * fracc.nang) {
+    for j in 0..n_ang_full {
         let q = 2.0 * k * (0.5 * ang[j]).sin();
-        let s11 = f64::midpoint(s2[j].norm().powi(2), s1[j].norm().powi(2));
-        let s12 = 0.5 * (s2[j].norm().powi(2) - s1[j].norm().powi(2));
+        let s11 = f64::midpoint(s2[j].norm_sqr(), s1[j].norm_sqr());
+        let s12 = 0.5 * (s2[j].norm_sqr() - s1[j].norm_sqr());
         let s33 = (s1[j] * s2[j].conj()).re;
-        let s34 = (s2[j] * s1[j].conj()).im;
+        // Hovenier (2004) sign convention: Im(S1 S2^*) = -Im(S2 S1^*) for e^{-i\omega t}.
+        let s34 = (s1[j] * s2[j].conj()).im;
         let sq = match fracc.cutoff {
             FractalCutoff::Gaussian => {
                 if (fracc.df - 3.0).abs() < f64::EPSILON {
-                    if q * q * r_g * r_g >= eta {
+                    if q * q * r_g * r_g / 3.0 >= eta {
                         0.0
                     } else {
                         (-q * q * r_g * r_g / 3.0).exp()
@@ -271,6 +273,8 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
                 let xi = (2.0 / (fracc.df * (fracc.df + 1.0))).sqrt() * r_g;
                 if j == 0 {
                     1.0
+                } else if (fracc.df - 1.0).abs() < 1e-12 {
+                    (q * xi).atan() / (q * xi)
                 } else {
                     ((fracc.df - 1.0) * (q * xi).atan()).sin()
                         / (q * xi
@@ -293,9 +297,12 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
 
     let mut c_sca: f64 = (0..(fracc.nang - 1))
         .map(|j| {
-            dang * (smat[[j, 0]] * (ang[j].sin())
-                + 4.0 * smat[[j + 1, 0]] * (ang[j + 1].sin())
-                + smat[[j + 2, 0]] * (ang[j + 2].sin()))
+            let i0 = 2 * j;
+            let i1 = i0 + 1;
+            let i2 = i0 + 2;
+            dang * (smat[[i0, 0]] * ang[i0].sin()
+                + 4.0 * smat[[i1, 0]] * ang[i1].sin()
+                + smat[[i2, 0]] * ang[i2].sin())
                 / 3.0
         })
         .sum::<f64>()
@@ -306,9 +313,12 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
     let pf = smat.slice(s![.., 0]).to_owned() / c_sca / (k * k);
     let g = (0..(fracc.nang - 1))
         .map(|j| {
-            dang * (pf[j] * (ang[j].sin()) * (ang[j].cos())
-                + 4.0 * pf[j + 1] * (ang[j + 1].sin()) * (ang[j + 1].cos())
-                + pf[j + 2] * (ang[j + 2].sin()) * (ang[j + 2].cos()))
+            let i0 = 2 * j;
+            let i1 = i0 + 1;
+            let i2 = i0 + 2;
+            dang * (pf[i0] * ang[i0].sin() * ang[i0].cos()
+                + 4.0 * pf[i1] * ang[i1].sin() * ang[i1].cos()
+                + pf[i2] * ang[i2].sin() * ang[i2].cos())
                 / 3.0
         })
         .sum::<f64>()
@@ -316,9 +326,12 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
         * PI;
     let nrm = (0..(fracc.nang - 1))
         .map(|j| {
-            dang * (pf[j] * (ang[j].sin())
-                + 4.0 * pf[j + 1] * (ang[j + 1].sin())
-                + pf[j + 2] * (ang[j + 2].sin()))
+            let i0 = 2 * j;
+            let i1 = i0 + 1;
+            let i2 = i0 + 2;
+            dang * (pf[i0] * ang[i0].sin()
+                + 4.0 * pf[i1] * ang[i1].sin()
+                + pf[i2] * ang[i2].sin())
                 / 3.0
         })
         .sum::<f64>()
@@ -336,20 +349,15 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
             let c_abs = (0..nmax)
                 .map(|j| {
                     let jf = j as f64;
-                    let cn1 = 1.0 / ad[[j, 0]].conj() - 1.0;
-                    let cn2 = 1.0 / ad[[j, 1]].conj() - 1.0;
-
                     (2.0 * jf + 3.0)
-                        * (cn1 * ad[[j, 0]].norm() * ad[[j, 0]].norm()
-                            + cn2 * ad[[j, 1]].norm() * ad[[j, 1]].norm())
-                        .re
+                        * ((ad[[j, 0]].re - ad[[j, 0]].norm_sqr())
+                            + (ad[[j, 1]].re - ad[[j, 1]].norm_sqr()))
                 })
                 .sum::<f64>()
                 * 2.0
                 * PI
                 * fracc.pn
-                / k
-                / k;
+                / (k * k);
             let c_ext = c_abs + c_sca;
             (c_sca, c_abs, c_ext)
         }
@@ -363,8 +371,7 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
                 * 2.0
                 * PI
                 * fracc.pn
-                / k
-                / k;
+                / (k * k);
             let c_abs = c_ext - c_sca;
             (c_sca, c_abs, c_ext)
         }
@@ -378,23 +385,19 @@ pub fn mean_scattering(fracc: &FractalConfig) -> Result<FractalResult> {
                 * 2.0
                 * PI
                 * fracc.pn
-                / k
-                / k;
+                / (k * k);
             let mut c_abs = (0..nmax)
                 .map(|j| {
-                    let cn1 = 1.0 / ad[[j, 0]].conj() - 1.0;
-                    let cn2 = 1.0 / ad[[j, 1]].conj() - 1.0;
-                    (2.0 * j as f64 + 3.0)
-                        * (cn1 * ad[[j, 0]].norm() * ad[[j, 0]].norm()
-                            + cn2 * ad[[j, 1]].norm() * ad[[j, 1]].norm())
-                        .re
+                    let jf = j as f64;
+                    (2.0 * jf + 3.0)
+                        * ((ad[[j, 0]].re - ad[[j, 0]].norm_sqr())
+                            + (ad[[j, 1]].re - ad[[j, 1]].norm_sqr()))
                 })
                 .sum::<f64>()
                 * 2.0
                 * PI
                 * fracc.pn
-                / k
-                / k;
+                / (k * k);
 
             let gc = match fracc.geometry {
                 FractalGeometry::Circular => PI * r_c * r_c,
@@ -516,7 +519,7 @@ fn structure_factor_integration(d: f64, q: f64, r_g: f64) -> f64 {
     } else {
         s_q = 0.0;
         let h = xmax / (2.0 * f64::from(integration_grid_size));
-        for i in 0..integration_grid_size - 2 {
+        for i in 0..integration_grid_size {
             let ir = f64::from(i);
             let x0 = 2.0 * ir * h;
             let x1 = (2.0 * ir + 1.0) * h;
@@ -551,7 +554,7 @@ fn structure_factor_fn(x: f64, c: f64, d: f64, q: f64, r_g: f64) -> f64 {
     if x == 0.0 {
         0.0
     } else {
-        let val = (q * r_g * x).sin() * (-c * c.powf(d)).exp() * x.powf(d - 2.0);
+        let val = (q * r_g * x).sin() * (-c * x.powf(d)).exp() * x.powf(d - 2.0);
         if val.abs() <= 1e-30 { 0.0 } else { val }
     }
 }
@@ -569,28 +572,22 @@ fn structure_factor_fn(x: f64, c: f64, d: f64, q: f64, r_g: f64) -> f64 {
 /// # Returns
 /// - `a`: Scattering coefficient.
 /// - `b`: Absorption coefficient.
-///
-/// # References
-/// The original BHMIE code is taken from Bruce Draine's homepage:
-/// <https://www.astro.princeton.edu/~draine/scattering.html>, with
-/// slight modifications.
 fn lorenz_mie(x: f64, refrel: Complex64, nstop: usize) -> Result<(CVector, CVector)> {
     let nmxx = 150_000;
 
     let y = refrel * x;
     let ymod = y.norm();
     let xstop = x + 4.0 * x.powf(1.0 / 3.0) + 2.0;
-    let nmx = xstop.max(ymod) as usize + 15;
+    let nmx = xstop.max(ymod).round() as usize + 15;
     if nmx > nmxx {
         return Err(anyhow!("MieOverflow"));
     }
 
     let mut d = CVector::zeros(nmx);
 
-    for n in 0..nmx - 1 {
-        let en = nmx - 1 - n;
-        let enr = (nmx - 1 - n) as f64;
-        d[nmx - 1 - n] = (enr / y) - (1.0 / (d[en] + enr / y));
+    for k in (1..nmx).rev() {
+        let en = (k + 1) as f64;
+        d[k - 1] = (en / y) - (1.0 / (d[k] + en / y));
     }
 
     let mut psi_0 = x.cos();
@@ -603,14 +600,14 @@ fn lorenz_mie(x: f64, refrel: Complex64, nstop: usize) -> Result<(CVector, CVect
     let mut b = CVector::zeros(nstop);
 
     for n in 0..nstop {
-        let nf = n as f64;
-        let psi = (2.0 * nf - 1.0) * psi_1 / x - psi_0;
-        let chi = (2.0 * nf - 1.0) * chi_1 / x - chi_0;
+        let en = (n + 1) as f64;
+        let psi = (2.0 * en - 1.0) * psi_1 / x - psi_0;
+        let chi = (2.0 * en - 1.0) * chi_1 / x - chi_0;
         let xi = Complex::new(psi, -chi);
-        a[n] = (d[n] / refrel + nf / x) * psi - psi_1;
-        a[n] /= (d[n] / refrel + (nf / x)) * xi - xi_1;
-        b[n] = (refrel * d[n] + nf / x) * psi - psi_1;
-        b[n] /= (refrel * d[n] + nf / x) * xi - xi_1;
+        a[n] = (d[n] / refrel + en / x) * psi - psi_1;
+        a[n] /= (d[n] / refrel + en / x) * xi - xi_1;
+        b[n] = (refrel * d[n] + en / x) * psi - psi_1;
+        b[n] /= (refrel * d[n] + en / x) * xi - xi_1;
         psi_0 = psi_1;
         psi_1 = psi;
         chi_0 = chi_1;
@@ -620,59 +617,45 @@ fn lorenz_mie(x: f64, refrel: Complex64, nstop: usize) -> Result<(CVector, CVect
     Ok((a, b))
 }
 
-/// Calculate scattering amplitude S1, S2 from given scattering coefficients d.
-///
-/// # References
-/// The original BHMIE code is taken from Bruce Draine's homepage:
-/// <https://www.astro.princeton.edu/~draine/scattering.html>, with
-/// slight modifications.
+/// Calculate scattering amplitudes $S_1, S_2$ from scattering coefficients `d`.
 fn renormalize(fracc: &FractalConfig, d: &CMatrix, dang: f64, nmax: usize) -> (CVector, CVector) {
     let amu = (0..fracc.nang)
-        .map(|j| j as f64 * dang)
-        .map(f64::cos)
+        .map(|j| (j as f64 * dang).cos())
         .collect::<RVector>();
 
     let mut pi = RVector::zeros(fracc.nang);
     let mut pi0 = RVector::zeros(fracc.nang);
-    let mut pi1 = RVector::zeros(fracc.nang);
+    let mut pi1 = RVector::ones(fracc.nang);
 
     let mut tau = RVector::zeros(fracc.nang);
 
-    let nn = 2 * fracc.nang;
+    let nn = 2 * fracc.nang - 1;
     let mut s1 = CVector::zeros(nn);
     let mut s2 = CVector::zeros(nn);
 
     let mut p = -1.0;
-    // let mut an = Complex::new(0.0, 0.0);
-    // let mut an1 = Complex::new(0.0, 0.0);
-    // let mut bn = Complex::new(0.0, 0.0);
-    // let mut bn1 = Complex::new(0.0, 0.0);
 
     for n in 0..nmax {
-        let nf = n as f64;
-        let f_n = (2.0 * nf + 3.0) / (nf + 1.0) / (nf + 2.0);
-        // if n > 1 {
-        //     an1 = an;
-        //     bn1 = bn;
-        // }
+        let en = (n + 1) as f64;
+        let f_n = (2.0 * en + 1.0) / (en * (en + 1.0));
         let an = d[[n, 0]];
         let bn = d[[n, 1]];
 
         for j in 0..fracc.nang {
             pi[j] = pi1[j];
-            tau[j] = nf * amu[j] * pi[j] - (nf + 2.0) * pi0[j];
+            tau[j] = en * amu[j] * pi[j] - (en + 1.0) * pi0[j];
             s1[j] += f_n * (an * pi[j] + bn * tau[j]);
             s2[j] += f_n * (an * tau[j] + bn * pi[j]);
         }
         p = -p;
         for j in 0..(fracc.nang - 1) {
-            let jj = 2 * fracc.nang - j - 1;
+            let jj = nn - 1 - j;
             s1[jj] += f_n * p * (an * pi[j] - bn * tau[j]);
-            s2[jj] += f_n * p * (-an * tau[j] + bn * pi[j]);
+            s2[jj] += f_n * p * (bn * pi[j] - an * tau[j]);
         }
 
         for j in 0..fracc.nang {
-            pi1[j] = ((2.0 * nf + 3.0) * amu[j] * pi[j] - (nf + 2.0) * pi0[j]) / (nf + 1.0);
+            pi1[j] = ((2.0 * en + 1.0) * amu[j] * pi[j] - (en + 1.0) * pi0[j]) / en;
             pi0[j] = pi[j];
         }
     }
@@ -735,42 +718,42 @@ fn mean_field(fracc: &FractalConfig, ad: &CMatrix, x_g: f64, nmax: usize) -> Res
     let order = 1;
     let pmax = 2 * nmax;
 
-    // Store values of Legendre polynomials (P_n^m) and their derivatives
-    let mut al1n = RMatrix::zeros((jm, nmax));
-    let mut ln = RMatrix::zeros((jm, pmax));
-    let mut dln = RMatrix::zeros((jm, pmax));
+    // Store values of Legendre polynomials (P_n^m) and their derivatives,
+    // indexed as [degree, quadrature_point] for contiguous dot products.
+    let mut al1n = RMatrix::zeros((nmax + 1, jm));
+    let mut ln = RMatrix::zeros((pmax + 1, jm));
+    let mut dln = RMatrix::zeros((pmax + 1, jm));
 
     for (j, xj) in x.iter().enumerate() {
         let (pmn, _) =
             legendre::lpmns(order, nmax, *xj).context("IntegrationFailure: In Legendre")?;
         let (lp, dlp) = legendre::lpn(pmax, *xj);
-        al1n.slice_mut(s![j, ..]).assign(&pmn);
-        ln.slice_mut(s![j, ..]).assign(&lp);
-        dln.slice_mut(s![j, ..]).assign(&dlp);
+        al1n.slice_mut(s![.., j]).assign(&pmn);
+        ln.slice_mut(s![.., j]).assign(&lp);
+        dln.slice_mut(s![.., j]).assign(&dlp);
     }
 
-    // Pre-compute the spherical Bessel functions and the T-matrix
-    let mut s_p = CVector::zeros(pmax);
+    // Pre-compute the spherical Bessel integrals S_p(k R_g) for p = 0..=2*nmax
+    let mut s_p = CVector::zeros(pmax + 1);
 
     for (p, val) in s_p.iter_mut().enumerate() {
         *val = bessel::int_sph_bessel(fracc, x_g, p).context("IntegrationFailure: In Bessel")?;
     }
 
     let mut t = CTensor::zeros((2, nmax, nmax));
-    for nu in 0..nmax {
+    for nu in 1..=nmax {
         let nuf = nu as f64;
-        for n in 0..nmax {
+        for n in 1..=nmax {
             let nf = n as f64;
             let pmin = nu.abs_diff(n);
-            let pmax = n + nu;
+            let p_hi = n + nu;
             let mut sum_a = Complex::new(0.0, 0.0);
             let mut sum_b = Complex::new(0.0, 0.0);
-            for (p, val) in s_p.iter().enumerate().take(pmax + 1).skip(pmin) {
-                let val = *val;
+            for (p, &val) in s_p.iter().enumerate().take(p_hi + 1).skip(pmin) {
                 let pf = p as f64;
                 let mut anunp = 0.0;
                 let mut bnunp = 0.0;
-                if pmax % 2 == p % 2 {
+                if p_hi % 2 == p % 2 {
                     anunp = w
                         .iter()
                         .zip(al1n.row(nu))
@@ -787,33 +770,37 @@ fn mean_field(fracc: &FractalConfig, ad: &CMatrix, x_g: f64, nmax: usize) -> Res
                         .map(|(((w, al1n_nu), al1n_n), dln_p)| w * al1n_nu * al1n_n * dln_p)
                         .sum();
                 }
-                anunp *= f64::midpoint(2.0 * pf, 1.0);
-                bnunp *= f64::midpoint(2.0 * pf, 1.0);
+                let factor = f64::midpoint(2.0 * pf, 1.0);
+                anunp *= factor;
+                bnunp *= factor;
 
                 sum_a += (nf * (nf + 1.0) + nuf * (nuf + 1.0) - pf * (pf + 1.0)) * anunp * val;
                 sum_b += bnunp * val;
             }
-            t[[0, nu, n]] = sum_a * (2.0 * nuf + 1.0) / (nf * (nf + 1.0) * nuf * (nuf + 1.0));
-            t[[1, nu, n]] = sum_b * 2.0 * (2.0 * nuf + 1.0) / (nf * (nf + 1.0) * nuf * (nuf + 1.0));
+            let denom = nf * (nf + 1.0) * nuf * (nuf + 1.0);
+            t[[0, nu - 1, n - 1]] = sum_a * (2.0 * nuf + 1.0) / denom;
+            t[[1, nu - 1, n - 1]] = sum_b * 2.0 * (2.0 * nuf + 1.0) / denom;
         }
     }
 
-    let mut s = CMatrix::ones((pmax, 2));
+    let mut s = CMatrix::zeros((pmax, pmax));
     let mut y = CVector::zeros(pmax);
 
     for n in 0..nmax {
         for nu in 0..nmax {
-            s[[2 * n - 1, 2 * n - 1]] = (fracc.pn - 1.0) * ad[[0, n]] * t[[0, nu, n]];
-            s[[2 * n - 1, 2 * n]] = (fracc.pn - 1.0) * ad[[0, n]] * t[[1, nu, n]];
-            s[[2 * n, 2 * n - 1]] = (fracc.pn - 1.0) * ad[[1, n]] * t[[0, nu, n]];
-            s[[2 * n, 2 * n]] = (fracc.pn - 1.0) * ad[[1, n]] * t[[1, nu, n]];
+            s[[2 * n, 2 * nu]] = (fracc.pn - 1.0) * ad[[n, 0]] * t[[0, nu, n]];
+            s[[2 * n, 2 * nu + 1]] = (fracc.pn - 1.0) * ad[[n, 0]] * t[[1, nu, n]];
+            s[[2 * n + 1, 2 * nu]] = (fracc.pn - 1.0) * ad[[n, 1]] * t[[1, nu, n]];
+            s[[2 * n + 1, 2 * nu + 1]] = (fracc.pn - 1.0) * ad[[n, 1]] * t[[0, nu, n]];
         }
-        y[2 * n - 1] = ad[[0, n]];
-        y[2 * n] = ad[[1, n]];
+        y[2 * n] = ad[[n, 0]];
+        y[2 * n + 1] = ad[[n, 1]];
+    }
+    for i in 0..pmax {
+        s[[i, i]] += Complex::new(1.0, 0.0);
     }
 
-    // Invert the T-matrix elements S
-    // and find mean-field vector r
+    // Solve S * r = y for mean-field scattering coefficients r
     let r = linalg::complex_matrix_inverse(pmax, 2 * pmax, &y, &s).context("SingularMatrix")?;
 
     Ok(r)
@@ -832,8 +819,103 @@ fn get_geometric_cross_section_okuzumi(pn: f64, a0: f64, ac: f64) -> f64 {
     let gc_bcca = if pn <= 16.0 {
         12.5 * pn.powf(0.685) * (-2.53 / pn.powf(0.0920)).exp() * gc0
     } else {
-        0.352 * pn + 0.566 * pn.powf(0.862) * gc0
+        (0.352 * pn + 0.566 * pn.powf(0.862)) * gc0
     };
 
     (1.0 / (1.0 / gc_bcca + 1.0 / gcc - 1.0 / gc_bcca2)).min(pn * PI * a0 * a0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::f64::consts::PI;
+
+    use approx::assert_relative_eq;
+    use num_complex::Complex64;
+
+    use super::FractalConfig;
+    use super::mean_scattering;
+    use super::{FractalCutoff, FractalGeometry, FractalSolver};
+
+    #[test]
+    fn mmf_matches_reference_for_df_below_and_above_two() {
+        // Monomer a0 = 0.1 um, aggregate compact radius a = 0.5 um (N = 125),
+        // wavelength = 10 um, m = 1.6 + 0.01i, rho = 3.0 g/cm^3, k0 = 1.3.
+        let r_agg: f64 = 0.5;
+        let rho = 3.0;
+        let mass = 4.0 * PI / 3.0 * r_agg.powi(3) * rho;
+        let to_kappa = 1e4 / mass;
+
+        // df = 1.8 (numerical radial branch in geofractal)
+        let cfg_18 = FractalConfig {
+            solver: FractalSolver::ModifiedMeanField,
+            cutoff: FractalCutoff::Gaussian,
+            geometry: FractalGeometry::Tazaki,
+            nang: 91,
+            pn: 125.0,
+            r0: 0.1,
+            df: 1.8,
+            k0: 1.3,
+            lmd: 10.0,
+            refrel: Complex64::new(1.6, 0.01),
+            ..Default::default()
+        };
+        let res_18 = mean_scattering(&cfg_18).unwrap();
+        assert_relative_eq!(res_18.c_abs * to_kappa, 29.6922, max_relative = 1e-4);
+        assert_relative_eq!(res_18.c_sca * to_kappa, 10.8906, max_relative = 1e-4);
+        assert_relative_eq!(res_18.c_ext * to_kappa, 40.5828, max_relative = 1e-4);
+        assert_relative_eq!(res_18.g, 0.146772, max_relative = 2e-3);
+
+        // df = 2.5 (analytical Gamma branch in geofractal)
+        let cfg_25 = FractalConfig {
+            df: 2.5,
+            ..cfg_18
+        };
+        let res_25 = mean_scattering(&cfg_25).unwrap();
+        assert_relative_eq!(res_25.c_abs * to_kappa, 30.2164, max_relative = 1e-4);
+        assert_relative_eq!(res_25.c_sca * to_kappa, 14.3306, max_relative = 1e-4);
+        assert_relative_eq!(res_25.c_ext * to_kappa, 44.5470, max_relative = 1e-4);
+        assert_relative_eq!(res_25.g, 0.0406998, max_relative = 2e-3);
+    }
+
+    #[test]
+    fn mmf_single_monomer_limit_matches_mie_including_f34_sign() {
+        // Single monomer N = 1: MMF must reproduce Lorenz-Mie for a sphere,
+        // with Hovenier (2004) sign for F34 (+5.68e-4 at 45.5 deg).
+        let r0: f64 = 0.10001;
+        let lam: f64 = 1.0;
+        let k = 2.0 * PI / lam;
+        let rho = 3.0;
+        let mass = 4.0 * PI / 3.0 * r0.powi(3) * rho;
+        let to_kappa = 1e4 / mass;
+
+        let cfg = FractalConfig {
+            solver: FractalSolver::ModifiedMeanField,
+            cutoff: FractalCutoff::Gaussian,
+            geometry: FractalGeometry::Tazaki,
+            nang: 91,
+            pn: 1.0,
+            r0,
+            df: 2.0,
+            k0: 1.0,
+            lmd: lam,
+            refrel: Complex64::new(1.6, 0.01),
+            ..Default::default()
+        };
+        let res = mean_scattering(&cfg).unwrap();
+        assert_relative_eq!(res.c_abs * to_kappa, 363.379, max_relative = 1e-3);
+        assert_relative_eq!(res.c_sca * to_kappa, 1260.10, max_relative = 1e-3);
+        assert_relative_eq!(res.c_ext * to_kappa, 1623.48, max_relative = 1e-3);
+        assert_relative_eq!(res.g, 0.0805527, max_relative = 2e-3);
+
+        // Angle index 45..46 brackets 45.5 deg; F_ij = 4*pi / (k^2 C_sca) * S_ij
+        let factor = 4.0 * PI / (k * k * res.c_sca);
+        let f11 = f64::midpoint(res.smat[[45, 0]], res.smat[[46, 0]]) * factor;
+        let f12 = f64::midpoint(res.smat[[45, 1]], res.smat[[46, 1]]) * factor;
+        let f33 = f64::midpoint(res.smat[[45, 2]], res.smat[[46, 2]]) * factor;
+        let f34 = f64::midpoint(res.smat[[45, 3]], res.smat[[46, 3]]) * factor;
+        assert_relative_eq!(f11, 1.28159, max_relative = 1e-3);
+        assert_relative_eq!(f12, -0.417852, max_relative = 1e-3);
+        assert_relative_eq!(f33, 1.21156, max_relative = 1e-3);
+        assert_relative_eq!(f34, 5.68434e-4, max_relative = 2e-3);
+    }
 }

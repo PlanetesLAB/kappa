@@ -180,9 +180,9 @@ fn mean_overlap_efficiency(
         sigma = factor * gamma(aicgm) * gamma_ur(aicgm, xmin);
     } else {
         let nxf = nx as f64;
-        let dlnx = (xmax - xmin).ln() / (nxf - 1.0);
+        let dlnx = (xmax / xmin).ln() / (nxf - 1.0);
         let mut x = RVector::zeros(nx);
-        let mut sang = RVector::zeros(nx);
+        let mut sang = RVector::ones(nx);
         sigma = 0.0;
         for i in 0..nx {
             let ir = i as f64;
@@ -197,7 +197,7 @@ fn mean_overlap_efficiency(
                 radial_integrand(aicgm, x[i + 1]) * sang[i + 1],
             );
         }
-        sigma *= factor * dlnx * factor;
+        sigma *= dlnx * factor;
     }
 
     sigma
@@ -245,7 +245,79 @@ fn angular_integrand(rho: f64, u: f64) -> f64 {
     if (1.0 - rho * u).abs() <= 1e-10 {
         0.0
     } else {
-        ((1.0 - rho * rho * u * u).sqrt().asin() - rho * u * (1.0 - rho * rho * u * u).sqrt()) * u
-            / (1.0 - u * u).sqrt()
+        let rad = (1.0 - rho * rho * u * u).max(0.0).sqrt();
+        (rad.asin() - rho * u * rad) * u / (1.0 - u * u).sqrt()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use approx::assert_relative_eq;
+
+    use crate::fractal::FractalCutoff;
+
+    use super::{AFactor, IntegrationMethod};
+    use super::get_geometric_cross_section_tazaki;
+
+    #[test]
+    fn tazaki_cross_section_single_monomer_is_unity() {
+        let g = get_geometric_cross_section_tazaki(
+            &IntegrationMethod::AnAn,
+            &AFactor::Unity,
+            &FractalCutoff::Gaussian,
+            1.0,
+            1.0,
+            2.0,
+        )
+        .unwrap();
+        assert_relative_eq!(g, 1.0, epsilon = 1e-14);
+    }
+
+    #[test]
+    fn tazaki_cross_section_continuous_across_df_two() {
+        // AnAn switches from numerical radial (df <= 2) to analytical Gamma (df > 2)
+        let g_below = get_geometric_cross_section_tazaki(
+            &IntegrationMethod::AnAn,
+            &AFactor::Unity,
+            &FractalCutoff::Gaussian,
+            125.0,
+            1.3,
+            1.999,
+        )
+        .unwrap();
+        let g_above = get_geometric_cross_section_tazaki(
+            &IntegrationMethod::AnAn,
+            &AFactor::Unity,
+            &FractalCutoff::Gaussian,
+            125.0,
+            1.3,
+            2.001,
+        )
+        .unwrap();
+        assert!(g_below > 0.0 && g_below < 1.0);
+        assert_relative_eq!(g_below, g_above, max_relative = 1e-2);
+    }
+
+    #[test]
+    fn tazaki_num_and_an_methods_agree_for_large_aggregates() {
+        let g_num = get_geometric_cross_section_tazaki(
+            &IntegrationMethod::NumNum,
+            &AFactor::Unity,
+            &FractalCutoff::Gaussian,
+            125.0,
+            1.3,
+            1.8,
+        )
+        .unwrap();
+        let g_an = get_geometric_cross_section_tazaki(
+            &IntegrationMethod::AnAn,
+            &AFactor::Unity,
+            &FractalCutoff::Gaussian,
+            125.0,
+            1.3,
+            1.8,
+        )
+        .unwrap();
+        assert_relative_eq!(g_num, g_an, max_relative = 0.05);
     }
 }
