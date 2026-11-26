@@ -105,7 +105,7 @@ pub fn get_geometric_cross_section_tazaki(
 
 /// Empirical normalized geometric cross section for small aggregates ($N < 16$)
 /// from [Minato et al. (2006)](https://ui.adsabs.harvard.edu/abs/2006A%26A...452..701M/abstract):
-/// $$\frac{G}{N \pi R_{0}^{2}} = 12.5 \thinspace N^{-0.315} \exp\!\left(-2.53 \thinspace N^{-0.0920}\right).$$
+/// $$\frac{G}{N \pi R_{0}^{2}} = 12.5 \thinspace N^{-0.315} \exp\left(-2.53 \thinspace N^{-0.0920}\right).$$
 fn minato_fit(n_monomers: f64) -> f64 {
     12.5 * n_monomers.powf(-0.315) * (-2.53 / n_monomers.powf(0.0920)).exp()
 }
@@ -234,7 +234,7 @@ fn angular_integration(cutoff: &FractalCutoff, x: f64, xmin: f64, fractal_dim: f
 }
 
 /// Evaluates the angular overlap integrand
-/// $$f_{\mathrm{ang}}(\rho, u) = \left[\arcsin\!\left(\sqrt{1 - \rho^{2} u^{2}}\right) - \rho u \sqrt{1 - \rho^{2} u^{2}}\right] \frac{u}{\sqrt{1 - u^{2}}},$$
+/// $$f_{\mathrm{ang}}(\rho, u) = \left[\arcsin\left(\sqrt{1 - \rho^{2} u^{2}}\right) - \rho u \sqrt{1 - \rho^{2} u^{2}}\right] \frac{u}{\sqrt{1 - u^{2}}},$$
 /// returning $0$ within $10^{-10}$ of the upper endpoint $\rho u = 1$.
 fn angular_integrand(rho: f64, u: f64) -> f64 {
     if (1.0 - rho * u).abs() <= 1e-10 {
