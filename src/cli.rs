@@ -602,8 +602,8 @@ fn inspect_material(key: &str) -> Result<(), KappaError> {
     println!(
         "{}: {:.4e} .. {:.4e} um ({} points)",
         "Wavelength".bold(),
-        comp.l0[0],
-        comp.l0[comp.size - 1],
+        comp.wavelengths[0],
+        comp.wavelengths[comp.size - 1],
         comp.size
     );
     Ok(())
@@ -628,8 +628,8 @@ fn list_materials() {
                 comp.class,
                 comp.state,
                 comp.rho,
-                comp.l0[0],
-                comp.l0[comp.size - 1],
+                comp.wavelengths[0],
+                comp.wavelengths[comp.size - 1],
                 comp.name
             );
         }
@@ -646,7 +646,8 @@ mod tests {
         WavelengthGrid,
     };
 
-    use super::{Cli, CliAction};
+    use super::Cli;
+    use super::CliAction;
 
     #[test]
     fn default_cli_uses_diana_and_dhs() {

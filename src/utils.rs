@@ -273,12 +273,14 @@ pub mod bessel {
         let nnf = f64::from(nn);
 
         let umax = match fracc.cutoff {
-            FractalCutoff::Gaussian => 2.0 * x_g * (eta1 / fracc.df).sqrt(),
-            FractalCutoff::Exponential => x_g * eta1 * (2.0 / (fracc.df * (fracc.df + 1.0))).sqrt(),
-            FractalCutoff::FractalDimension => x_g * (2.0 * eta1).powf(1.0 / fracc.df),
+            FractalCutoff::Gaussian => 2.0 * x_g * (eta1 / fracc.fractal_dim).sqrt(),
+            FractalCutoff::Exponential => {
+                x_g * eta1 * (2.0 / (fracc.fractal_dim * (fracc.fractal_dim + 1.0))).sqrt()
+            }
+            FractalCutoff::FractalDimension => x_g * (2.0 * eta1).powf(1.0 / fracc.fractal_dim),
         };
 
-        let umin = x_g * (-eta2 / fracc.df).exp();
+        let umin = x_g * (-eta2 / fracc.fractal_dim).exp();
         let ln_umin = umin.ln();
         let d_ln_u = (umax / umin).ln() / (nnf - 1.0);
 
@@ -313,7 +315,7 @@ pub mod bessel {
             }
 
             let fc = two_point_correlation(fracc, u_val, x_g);
-            let u_weight = ((fracc.df - 1.0) * ln_u).exp() * fc;
+            let u_weight = ((fracc.fractal_dim - 1.0) * ln_u).exp() * fc;
             let curr_intg = u_weight * jp * Complex::new(jp, yp);
 
             if n > 0 {
@@ -326,7 +328,7 @@ pub mod bessel {
             prev_unit = u_weight;
         }
 
-        let x_g_df = x_g.powf(fracc.df);
+        let x_g_df = x_g.powf(fracc.fractal_dim);
         unitary /= x_g_df;
         let mut sp = 0.5 * wa / x_g_df;
         let error = (1.0 - unitary).abs();
@@ -458,7 +460,8 @@ pub mod bessel {
 }
 
 pub mod linalg {
-    use anyhow::{Result, bail};
+    use anyhow::Result;
+    use anyhow::bail;
     use num_complex::Complex64;
     use planetes_ext::types::{CMatrix, CVector};
 
@@ -588,8 +591,7 @@ pub mod gamma {
     //! <https://github.com/statrs-dev/statrs/blob/master/src/function/gamma.rs>
 
     #![allow(clippy::excessive_precision)]
-    use std::f64::consts::EULER_GAMMA;
-    use std::f64::consts::{E, PI};
+    use std::f64::consts::{E, EULER_GAMMA, PI};
 
     use anyhow::Result;
     use anyhow::anyhow;
@@ -1015,7 +1017,8 @@ pub mod special {
 
     use approx::AbsDiffEq;
 
-    use crate::fractal::{FractalConfig, FractalCutoff};
+    use crate::fractal::FractalConfig;
+    use crate::fractal::FractalCutoff;
 
     use super::gamma::gamma;
 
@@ -1038,24 +1041,21 @@ pub mod special {
 
     #[must_use]
     pub fn two_point_correlation(fracc: &FractalConfig, u: f64, x: f64) -> f64 {
+        let df = fracc.fractal_dim;
         match fracc.cutoff {
             FractalCutoff::Gaussian => {
-                let c = 0.25 * fracc.df;
-                (2.0 * c.powf(0.5 * fracc.df) / gamma(0.5 * fracc.df)) * (-c * u * u / x / x).exp()
+                let c = 0.25 * df;
+                (2.0 * c.powf(0.5 * df) / gamma(0.5 * df)) * (-c * u * u / x / x).exp()
             }
             FractalCutoff::Exponential => {
-                let c = (0.5 * fracc.df * (fracc.df + 1.0)).sqrt();
-                (c.powf(fracc.df) / gamma(fracc.df)) * (-c * u / x).exp()
+                let c = (0.5 * df * (df + 1.0)).sqrt();
+                (c.powf(df) / gamma(df)) * (-c * u / x).exp()
             }
             FractalCutoff::FractalDimension => {
                 let c = 0.5;
-                (c * fracc.df) * (-c * (u / x).powf(fracc.df)).exp()
+                (c * df) * (-c * (u / x).powf(df)).exp()
             }
         }
-    }
-
-    pub fn output_structure() {
-        todo!()
     }
 
     #[must_use]
@@ -1400,7 +1400,7 @@ mod tests {
         let cfg = FractalConfig {
             cutoff: FractalCutoff::Gaussian,
             geometry: FractalGeometry::Circular,
-            df: 2.0,
+            fractal_dim: 2.0,
             ..Default::default()
         };
         let sp = bessel::int_sph_bessel(&cfg, x_g, 0).unwrap();
@@ -1413,7 +1413,7 @@ mod tests {
             let cfg_c = FractalConfig {
                 cutoff,
                 geometry: FractalGeometry::Circular,
-                df: 1.8,
+                fractal_dim: 1.8,
                 ..Default::default()
             };
             let val = bessel::int_sph_bessel(&cfg_c, 2.0, 2).unwrap();

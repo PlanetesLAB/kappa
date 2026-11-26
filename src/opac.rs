@@ -20,7 +20,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::components::StaticComponent;
 use crate::components::try_get_lnk_data;
-use crate::dhs::DHSConfig;
+use crate::dhs::DhsConfig;
 use crate::dhs::toon_ackerman_1981;
 use crate::fractal::FractalConfig;
 use crate::fractal::mean_scattering;
@@ -823,15 +823,16 @@ impl PreparedModel {
                 MaterialSource::Builtin(key) => {
                     let comp = try_get_lnk_data(key)
                         .ok_or_else(|| KappaError::UnknownMaterial(key.clone()))?;
-                    let (re, im) = regrid_lnk_data(comp.l0, comp.n0, comp.k0, &wavelengths, true);
+                    let (re, im) =
+                        regrid_lnk_data(comp.wavelengths, comp.n, comp.k, &wavelengths, true);
                     (re, im, comp.rho)
                 }
                 MaterialSource::LnkFile(path) => {
                     let path_str = path.to_string_lossy();
                     let comp = read_lnk_file(&path_str, None)?;
-                    let l0 = comp.l0.to_vec();
-                    let n0 = comp.n0.to_vec();
-                    let k0 = comp.k0.to_vec();
+                    let l0 = comp.wavelengths.to_vec();
+                    let n0 = comp.n.to_vec();
+                    let k0 = comp.k.to_vec();
                     let (re, im) = regrid_lnk_data(&l0, &n0, &k0, &wavelengths, true);
                     (re, im, comp.rho)
                 }
@@ -1095,14 +1096,14 @@ impl PreparedModel {
                             "Warning: opacities OK, but some F_nn,g_asym may not be accurate (particle {}, a={:.3}, lam<={:.3})",
                             ia + 1,
                             asplit,
-                            p.is_ok_lmin
+                            p.untrusted_lmax
                         );
                     } else {
                         eprintln!(
                             "Warning: opacities OK, but some F_nn,g_asym are set to zero (particle {}, a={:.3}, lam<={:.3})",
                             ia + 1,
                             asplit,
-                            p.is_ok_lmin
+                            p.untrusted_lmax
                         );
                     }
                 }
@@ -1299,27 +1300,27 @@ impl PreparedModel {
             .collect::<Vec<Mueller>>();
 
         let mut is_ok = true;
-        let mut is_ok_lmin = 0.0;
+        let mut untrusted_lmax = 0.0;
         for ilam in 0..nlam {
             if !trust[ilam] {
                 is_ok = false;
-                is_ok_lmin = self.wavelengths[ilam];
+                untrusted_lmax = self.wavelengths[ilam];
             }
         }
 
         Ok(Particle {
-            rv: (amin * amax).sqrt(),
-            rvmin: amin,
-            rvmax: amax,
+            radius_mean: (amin * amax).sqrt(),
+            radius_min: amin,
+            radius_max: amax,
             rho,
             k_abs,
             k_ext,
             k_sca,
             g,
-            f: mueller,
+            mueller,
             trust,
             is_ok,
-            is_ok_lmin,
+            untrusted_lmax,
         })
     }
 
@@ -1368,23 +1369,23 @@ impl PreparedModel {
                 rad / 5000.0
             };
             let miec = MieConfig {
-                nangle: nang,
+                n_angles: nang,
                 delta: 1e-12,
-                thmin,
-                thmax,
+                theta_min: thmin,
+                theta_max: thmax,
                 step,
-                lam: lmie,
-                cmm: Complex::new(self.n_blend[ilam], self.k_blend[ilam]),
-                rad,
+                wavelength: lmie,
+                refractive_index: Complex::new(self.n_blend[ilam], self.k_blend[ilam]),
+                radius: rad,
             };
             let mie_result = de_rooij_1984(&miec)?;
             for j in 0..nang {
-                mie_f11[j] = mie_result.f_11[j];
-                mie_f12[j] = mie_result.f_12[j];
-                mie_f22[j] = mie_result.f_11[j];
-                mie_f33[j] = mie_result.f_33[j];
-                mie_f34[j] = mie_result.f_34[j];
-                mie_f44[j] = mie_result.f_33[j];
+                mie_f11[j] = mie_result.f11[j];
+                mie_f12[j] = mie_result.f12[j];
+                mie_f22[j] = mie_result.f11[j];
+                mie_f33[j] = mie_result.f33[j];
+                mie_f34[j] = mie_result.f34[j];
+                mie_f44[j] = mie_result.f33[j];
             }
             Ok((mie_result.c_sca, mie_result.c_ext))
         };
@@ -1488,21 +1489,21 @@ impl PreparedModel {
                             let rcore = rad * kps.f[ifn].powf(1.0 / 3.0);
                             let mconj = Complex::new(self.n_blend[ilam], -self.k_blend[ilam]);
                             let wvno_1 = wvno.min(dhs_size_limit / rad);
-                            let dhs_cfg = DHSConfig {
+                            let dhs_cfg = DhsConfig {
                                 r_core: rcore,
                                 r_shell: rad,
                                 wave_number: wvno_1,
-                                r_indsh: mconj,
-                                r_indco: m_in,
-                                mu: kps.mu,
-                                numang: nang / 2,
+                                m_shell: mconj,
+                                m_core: m_in,
+                                cos_theta: kps.mu,
+                                n_angles: nang / 2,
                                 max_angle: nang,
                             };
 
                             if let Ok(dhs_result) = toon_ackerman_1981(&dhs_cfg) {
                                 let ext_mie_factor = dhs_result.q_ext * PI * rad.powi(2);
                                 let scat_mie_factor = dhs_result.q_sca * PI * rad.powi(2);
-                                // factor absorbs the 1/2 in F11, F12; s10 and d10 need 2*factor.
+                                // factor absorbs the 1/2 in F11, F12; s21 and d21 need 2*factor.
                                 let factor = if scat_mie_factor > 0.0 {
                                     2.0 * PI / (scat_mie_factor * wvno_1.powi(2))
                                 } else {
@@ -1512,21 +1513,21 @@ impl PreparedModel {
                                 for j in 0..(nang / 2) {
                                     let back = nang - j - 1;
                                     mie_f11[j] =
-                                        (dhs_result.m1[[j, 0]] + dhs_result.m0[[j, 0]]) * factor;
+                                        (dhs_result.i2[[j, 0]] + dhs_result.i1[[j, 0]]) * factor;
                                     mie_f12[j] =
-                                        (dhs_result.m1[[j, 0]] - dhs_result.m0[[j, 0]]) * factor;
+                                        (dhs_result.i2[[j, 0]] - dhs_result.i1[[j, 0]]) * factor;
                                     mie_f22[j] = mie_f11[j];
-                                    mie_f33[j] = dhs_result.s10[[j, 0]] * factor2;
-                                    mie_f34[j] = -dhs_result.d10[[j, 0]] * factor2;
+                                    mie_f33[j] = dhs_result.s21[[j, 0]] * factor2;
+                                    mie_f34[j] = -dhs_result.d21[[j, 0]] * factor2;
                                     mie_f44[j] = mie_f33[j];
 
                                     mie_f11[back] =
-                                        (dhs_result.m1[[j, 1]] + dhs_result.m0[[j, 1]]) * factor;
+                                        (dhs_result.i2[[j, 1]] + dhs_result.i1[[j, 1]]) * factor;
                                     mie_f12[back] =
-                                        (dhs_result.m1[[j, 1]] - dhs_result.m0[[j, 1]]) * factor;
+                                        (dhs_result.i2[[j, 1]] - dhs_result.i1[[j, 1]]) * factor;
                                     mie_f22[back] = mie_f11[back];
-                                    mie_f33[back] = dhs_result.s10[[j, 1]] * factor2;
-                                    mie_f34[back] = -dhs_result.d10[[j, 1]] * factor2;
+                                    mie_f33[back] = dhs_result.s21[[j, 1]] * factor2;
+                                    mie_f34[back] = -dhs_result.d21[[j, 1]] * factor2;
                                     mie_f44[back] = mie_f33[back];
                                 }
                                 scat_mie = scat_mie_factor;
@@ -1592,33 +1593,37 @@ impl PreparedModel {
                         solver: FractalSolver::ModifiedMeanField,
                         cutoff: FractalCutoff::Gaussian,
                         geometry: FractalGeometry::Tazaki,
-                        nang: nang / 2 + 1,
-                        pn: nmono,
-                        r0: monomer_radius,
-                        df: dfrac,
-                        k0: kfrac,
-                        lmd: wavelength,
-                        refrel: Complex::new(self.n_blend[ilam], self.k_blend[ilam]),
+                        n_angles: nang / 2 + 1,
+                        n_monomers: nmono,
+                        monomer_radius,
+                        fractal_dim: dfrac,
+                        prefactor: kfrac,
+                        wavelength,
+                        refractive_index: Complex::new(self.n_blend[ilam], self.k_blend[ilam]),
                         ..Default::default()
                     };
                     let frac_result = mean_scattering(&fracc)?;
-                    if frac_result.dphi > 1.0 {
+                    if frac_result.phase_shift > 1.0 {
                         smat_nbad += 1;
                     }
                     let factor = 4.0 * PI / wvno.powi(2);
                     for j in 0..nang {
-                        let s11 =
-                            f64::midpoint(frac_result.smat[[j, 0]], frac_result.smat[[j + 1, 0]])
-                                * factor;
-                        let s12 =
-                            f64::midpoint(frac_result.smat[[j, 1]], frac_result.smat[[j + 1, 1]])
-                                * factor;
-                        let s33 =
-                            f64::midpoint(frac_result.smat[[j, 2]], frac_result.smat[[j + 1, 2]])
-                                * factor;
-                        let s34 =
-                            f64::midpoint(frac_result.smat[[j, 3]], frac_result.smat[[j + 1, 3]])
-                                * factor;
+                        let s11 = f64::midpoint(
+                            frac_result.scattering_matrix[[j, 0]],
+                            frac_result.scattering_matrix[[j + 1, 0]],
+                        ) * factor;
+                        let s12 = f64::midpoint(
+                            frac_result.scattering_matrix[[j, 1]],
+                            frac_result.scattering_matrix[[j + 1, 1]],
+                        ) * factor;
+                        let s33 = f64::midpoint(
+                            frac_result.scattering_matrix[[j, 2]],
+                            frac_result.scattering_matrix[[j + 1, 2]],
+                        ) * factor;
+                        let s34 = f64::midpoint(
+                            frac_result.scattering_matrix[[j, 3]],
+                            frac_result.scattering_matrix[[j + 1, 3]],
+                        ) * factor;
                         f11[j] += kps.nr[is] * s11;
                         f12[j] += kps.nr[is] * s12;
                         f22[j] += kps.nr[is] * s11;
@@ -2117,7 +2122,7 @@ impl PreparedModel {
             writeln!(writer)?;
             for ilam in 0..nlam {
                 if !is_sparse || self.sparse_indices.contains(&ilam) {
-                    let m = &p.f[ilam];
+                    let m = &p.mueller[ilam];
                     if self.config.for_radmc {
                         let mut z11 = vec![0.0; nang + 1];
                         let mut z12 = vec![0.0; nang + 1];
@@ -2262,18 +2267,18 @@ pub struct Mueller {
 /// Computed opacities, asymmetry factor, and Mueller matrices for a dust population.
 #[derive(Default)]
 pub struct Particle {
-    pub rv: f64,
-    pub rvmin: f64,
-    pub rvmax: f64,
+    pub radius_mean: f64,
+    pub radius_min: f64,
+    pub radius_max: f64,
     pub rho: f64,
     pub k_abs: RVector,
     pub k_sca: RVector,
     pub k_ext: RVector,
     pub g: RVector,
-    pub f: Vec<Mueller>,
+    pub mueller: Vec<Mueller>,
     pub trust: BVector,
     pub is_ok: bool,
-    pub is_ok_lmin: f64,
+    pub untrusted_lmax: f64,
 }
 
 struct KappaResult {
@@ -2301,11 +2306,11 @@ pub struct Component {
     /// Number of wavelength points.
     pub size: usize,
     /// Wavelengths in $\mu\mathrm{m}$.
-    pub l0: RVector,
+    pub wavelengths: RVector,
     /// Real part of the refractive index.
-    pub n0: RVector,
+    pub n: RVector,
     /// Imaginary part of the refractive index.
-    pub k0: RVector,
+    pub k: RVector,
 }
 
 impl From<StaticComponent> for Component {
@@ -2322,9 +2327,9 @@ impl From<&StaticComponent> for Component {
             state: sc.state.to_string(),
             rho: sc.rho,
             size: sc.size,
-            l0: RVector::from(sc.l0.to_vec()),
-            n0: RVector::from(sc.n0.to_vec()),
-            k0: RVector::from(sc.k0.to_vec()),
+            wavelengths: RVector::from(sc.wavelengths.to_vec()),
+            n: RVector::from(sc.n.to_vec()),
+            k: RVector::from(sc.k.to_vec()),
         }
     }
 }
@@ -2376,7 +2381,8 @@ mod tests {
     use std::f64::consts::PI;
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
 
     use approx::assert_relative_eq;
 
@@ -2407,7 +2413,7 @@ mod tests {
         assert_relative_eq!(p.k_ext[0], 16635.9, max_relative = 1e-3);
         assert_relative_eq!(p.g[0], 0.878_882, max_relative = 2e-3);
 
-        let m = &p.f[0];
+        let m = &p.mueller[0];
         for j in 0..cfg.n_angles {
             assert_relative_eq!(m.f22[j], m.f11[j], max_relative = 1e-12);
             assert_relative_eq!(m.f44[j], m.f33[j], max_relative = 1e-12);
@@ -2431,7 +2437,7 @@ mod tests {
             dhs_size_limit: 10.0,
         };
         let p_cap = cfg.compute().unwrap();
-        let m_cap = &p_cap.f[0];
+        let m_cap = &p_cap.mueller[0];
         assert_relative_eq!(m_cap.f22[0], m_cap.f11[0], max_relative = 1e-12);
         assert!(m_cap.f33[0] / m_cap.f11[0] > 0.90);
     }
@@ -2546,7 +2552,7 @@ mod tests {
         assert_relative_eq!(p.k_abs[0], 2744.68, max_relative = 1e-3);
         assert_relative_eq!(p.k_sca[0], 180.933, max_relative = 1e-3);
         assert_relative_eq!(p.g[0], 0.399_211, max_relative = 2e-3);
-        assert!(p.f[0].f11[0] > 1.0);
+        assert!(p.mueller[0].f11[0] > 1.0);
 
         cfg.method = ScatteringMethod::mmf(0.1, AggregateStructure::FillingFactor(0.2));
         let p_ff = cfg.compute().unwrap();
@@ -2580,7 +2586,7 @@ mod tests {
         assert_relative_eq!(p_grid.k_abs[0], 3071.49, max_relative = 1e-3);
         assert_relative_eq!(p_grid.k_sca[0], 0.215_381, max_relative = 1e-3);
 
-        let m = &p.f[0];
+        let m = &p.mueller[0];
         for j in 0..cde.n_angles {
             let theta = PI * (j as f64 + 0.5) / cde.n_angles as f64;
             assert_relative_eq!(
@@ -2611,7 +2617,7 @@ mod tests {
         assert_relative_eq!(pc.k_sca[0], 191.453, max_relative = 1e-3);
         assert_relative_eq!(pc.g[0], 0.671_673, max_relative = 1e-3);
         for i in 0..5 {
-            assert_relative_eq!(pc.f[0].f11[i], pc.f[0].f11[5], max_relative = 1e-12);
+            assert_relative_eq!(pc.mueller[0].f11[i], pc.mueller[0].f11[5], max_relative = 1e-12);
         }
     }
 

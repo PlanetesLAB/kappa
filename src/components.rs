@@ -137,12 +137,12 @@ pub struct StaticComponent {
     pub rho: f64,
     /// size
     pub size: usize,
-    /// Wavelengths.
-    pub l0: &'static [f64],
-    /// Refractive index.
-    pub n0: &'static [f64],
-    /// Extinction coefficient.
-    pub k0: &'static [f64],
+    /// Wavelengths in micrometers.
+    pub wavelengths: &'static [f64],
+    /// Real part of the refractive index.
+    pub n: &'static [f64],
+    /// Imaginary part of the refractive index (extinction coefficient).
+    pub k: &'static [f64],
 }
 
 static L0_ASTROSIL: &[f64; 837] = &[
@@ -2677,9 +2677,9 @@ pub static ASTROSIL: StaticComponent = StaticComponent {
     state: "Amorphous",
     rho: 3.3,
     size: 837,
-    l0: L0_ASTROSIL,
-    n0: N0_ASTROSIL,
-    k0: K0_ASTROSIL,
+    wavelengths: L0_ASTROSIL,
+    n: N0_ASTROSIL,
+    k: K0_ASTROSIL,
 };
 
 static L0_C_NANO: &[f64; 88] = &[
@@ -2721,9 +2721,9 @@ pub static C_NANO: StaticComponent = StaticComponent {
     state: "Crystalline",
     rho: 2.3,
     size: 88,
-    l0: L0_C_NANO,
-    n0: N0_C_NANO,
-    k0: K0_C_NANO,
+    wavelengths: L0_C_NANO,
+    n: N0_C_NANO,
+    k: K0_C_NANO,
 };
 
 static L0_C_GRA: &[f64; 1201] = &[
@@ -3208,9 +3208,9 @@ pub static C_GRA: StaticComponent = StaticComponent {
     state: "Crystalline",
     rho: 2.16,
     size: 1201,
-    l0: L0_C_GRA,
-    n0: N0_C_GRA,
-    k0: K0_C_GRA,
+    wavelengths: L0_C_GRA,
+    n: N0_C_GRA,
+    k: K0_C_GRA,
 };
 
 static L0_C_ORG: &[f64; 113] = &[
@@ -3573,9 +3573,9 @@ pub static C_ORG: StaticComponent = StaticComponent {
     state: "Amorphous",
     rho: 1.5,
     size: 113,
-    l0: L0_C_ORG,
-    n0: N0_C_ORG,
-    k0: K0_C_ORG,
+    wavelengths: L0_C_ORG,
+    n: N0_C_ORG,
+    k: K0_C_ORG,
 };
 
 static L0_C_P: &[f64; 90] = &[
@@ -3615,9 +3615,9 @@ pub static C_P: StaticComponent = StaticComponent {
     state: "Amorphous",
     rho: 1.8,
     size: 90,
-    l0: L0_C_P,
-    n0: N0_C_P,
-    k0: K0_C_P,
+    wavelengths: L0_C_P,
+    n: N0_C_P,
+    k: K0_C_P,
 };
 
 static L0_C_Z: &[f64; 2060] = &[
@@ -9816,9 +9816,9 @@ pub static C_Z: StaticComponent = StaticComponent {
     state: "Amorphous",
     rho: 1.8,
     size: 2060,
-    l0: L0_C_Z,
-    n0: N0_C_Z,
-    k0: K0_C_Z,
+    wavelengths: L0_C_Z,
+    n: N0_C_Z,
+    k: K0_C_Z,
 };
 
 static L0_CH3OH_A: &[f64; 1006] = &[
@@ -12857,9 +12857,9 @@ pub static CH3OH_A: StaticComponent = StaticComponent {
     state: "Amorphous",
     rho: 0.779,
     size: 1006,
-    l0: L0_CH3OH_A,
-    n0: N0_CH3OH_A,
-    k0: K0_CH3OH_A,
+    wavelengths: L0_CH3OH_A,
+    n: N0_CH3OH_A,
+    k: K0_CH3OH_A,
 };
 
 static L0_CH3OH_C: &[f64; 1009] = &[
@@ -15906,9 +15906,9 @@ pub static CH3OH_C: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 1.02,
     size: 1009,
-    l0: L0_CH3OH_C,
-    n0: N0_CH3OH_C,
-    k0: K0_CH3OH_C,
+    wavelengths: L0_CH3OH_C,
+    n: N0_CH3OH_C,
+    k: K0_CH3OH_C,
 };
 
 static L0_CH4_A: &[f64; 906] = &[
@@ -18642,9 +18642,9 @@ pub static CH4_A: StaticComponent = StaticComponent {
     state: "amorphous",
     rho: 0.47,
     size: 906,
-    l0: L0_CH4_A,
-    n0: N0_CH4_A,
-    k0: K0_CH4_A,
+    wavelengths: L0_CH4_A,
+    n: N0_CH4_A,
+    k: K0_CH4_A,
 };
 
 static L0_CH4_C: &[f64; 1000] = &[
@@ -21660,9 +21660,9 @@ pub static CH4_C: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 0.47,
     size: 1000,
-    l0: L0_CH4_C,
-    n0: N0_CH4_C,
-    k0: K0_CH4_C,
+    wavelengths: L0_CH4_C,
+    n: N0_CH4_C,
+    k: K0_CH4_C,
 };
 
 static L0_CO_A: &[f64; 747] = &[
@@ -23919,9 +23919,9 @@ pub static CO_A: StaticComponent = StaticComponent {
     state: "amorphous",
     rho: 0.81,
     size: 747,
-    l0: L0_CO_A,
-    n0: N0_CO_A,
-    k0: K0_CO_A,
+    wavelengths: L0_CO_A,
+    n: N0_CO_A,
+    k: K0_CO_A,
 };
 
 static L0_CO2_A: &[f64; 1029] = &[
@@ -27024,9 +27024,9 @@ pub static CO2_A: StaticComponent = StaticComponent {
     state: "amorphous",
     rho: 1.2,
     size: 1029,
-    l0: L0_CO2_A,
-    n0: N0_CO2_A,
-    k0: K0_CO2_A,
+    wavelengths: L0_CO2_A,
+    n: N0_CO2_A,
+    k: K0_CO2_A,
 };
 
 static L0_CO2_C: &[f64; 1000] = &[
@@ -30042,9 +30042,9 @@ pub static CO2_C: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 1.67,
     size: 1000,
-    l0: L0_CO2_C,
-    n0: N0_CO2_C,
-    k0: K0_CO2_C,
+    wavelengths: L0_CO2_C,
+    n: N0_CO2_C,
+    k: K0_CO2_C,
 };
 
 static L0_CO2_W: &[f64; 945] = &[
@@ -30342,9 +30342,9 @@ pub static CO2_W: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 1.6,
     size: 945,
-    l0: L0_CO2_W,
-    n0: N0_CO2_W,
-    k0: K0_CO2_W,
+    wavelengths: L0_CO2_W,
+    n: N0_CO2_W,
+    k: K0_CO2_W,
 };
 
 static L0_COR_C: &[f64; 266] = &[
@@ -30462,9 +30462,9 @@ pub static COR_C: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 4.0,
     size: 266,
-    l0: L0_COR_C,
-    n0: N0_COR_C,
-    k0: K0_COR_C,
+    wavelengths: L0_COR_C,
+    n: N0_COR_C,
+    k: K0_COR_C,
 };
 
 static L0_FE_C: &[f64; 113] = &[
@@ -30819,9 +30819,9 @@ pub static FE_C: StaticComponent = StaticComponent {
     state: "metallic",
     rho: 7.87,
     size: 113,
-    l0: L0_FE_C,
-    n0: N0_FE_C,
-    k0: K0_FE_C,
+    wavelengths: L0_FE_C,
+    n: N0_FE_C,
+    k: K0_FE_C,
 };
 
 static L0_FES: &[f64; 113] = &[
@@ -31176,9 +31176,9 @@ pub static FES: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 4.83,
     size: 113,
-    l0: L0_FES,
-    n0: N0_FES,
-    k0: K0_FES,
+    wavelengths: L0_FES,
+    n: N0_FES,
+    k: K0_FES,
 };
 
 static L0_H2O_A: &[f64; 2293] = &[
@@ -38073,9 +38073,9 @@ pub static H2O_A: StaticComponent = StaticComponent {
     state: "amorphous",
     rho: 0.92,
     size: 2293,
-    l0: L0_H2O_A,
-    n0: N0_H2O_A,
-    k0: K0_H2O_A,
+    wavelengths: L0_H2O_A,
+    n: N0_H2O_A,
+    k: K0_H2O_A,
 };
 
 static L0_H2O_W: &[f64; 486] = &[
@@ -39549,9 +39549,9 @@ pub static H2O_W: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 0.92,
     size: 486,
-    l0: L0_H2O_W,
-    n0: N0_H2O_W,
-    k0: K0_H2O_W,
+    wavelengths: L0_H2O_W,
+    n: N0_H2O_W,
+    k: K0_H2O_W,
 };
 
 static L0_NH3_M: &[f64; 298] = &[
@@ -39652,9 +39652,9 @@ pub static NH3_M: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 0.75,
     size: 298,
-    l0: L0_NH3_M,
-    n0: N0_NH3_M,
-    k0: K0_NH3_M,
+    wavelengths: L0_NH3_M,
+    n: N0_NH3_M,
+    k: K0_NH3_M,
 };
 
 static L0_OL_C_MG00: &[f64; 5000] = &[
@@ -54670,9 +54670,9 @@ pub static OL_C_MG00: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 4.39,
     size: 5000,
-    l0: L0_OL_C_MG00,
-    n0: N0_OL_C_MG00,
-    k0: K0_OL_C_MG00,
+    wavelengths: L0_OL_C_MG00,
+    n: N0_OL_C_MG00,
+    k: K0_OL_C_MG00,
 };
 
 static L0_OL_C_MG100: &[f64; 9750] = &[
@@ -58345,9 +58345,9 @@ pub static OL_C_MG100: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 3.27,
     size: 9750,
-    l0: L0_OL_C_MG100,
-    n0: N0_OL_C_MG100,
-    k0: K0_OL_C_MG100,
+    wavelengths: L0_OL_C_MG100,
+    n: N0_OL_C_MG100,
+    k: K0_OL_C_MG100,
 };
 
 static L0_OL_C_MG95: &[f64; 4096] = &[
@@ -70651,9 +70651,9 @@ pub static OL_C_MG95: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 3.33,
     size: 4096,
-    l0: L0_OL_C_MG95,
-    n0: N0_OL_C_MG95,
-    k0: K0_OL_C_MG95,
+    wavelengths: L0_OL_C_MG95,
+    n: N0_OL_C_MG95,
+    k: K0_OL_C_MG95,
 };
 
 static L0_OL_MG40: &[f64; 109] = &[
@@ -70707,9 +70707,9 @@ pub static OL_MG40: StaticComponent = StaticComponent {
     state: "amorphous",
     rho: 3.71,
     size: 109,
-    l0: L0_OL_MG40,
-    n0: N0_OL_MG40,
-    k0: K0_OL_MG40,
+    wavelengths: L0_OL_MG40,
+    n: N0_OL_MG40,
+    k: K0_OL_MG40,
 };
 
 static L0_OL_MG50: &[f64; 109] = &[
@@ -70763,9 +70763,9 @@ pub static OL_MG50: StaticComponent = StaticComponent {
     state: "amorphous",
     rho: 3.71,
     size: 109,
-    l0: L0_OL_MG50,
-    n0: N0_OL_MG50,
-    k0: K0_OL_MG50,
+    wavelengths: L0_OL_MG50,
+    n: N0_OL_MG50,
+    k: K0_OL_MG50,
 };
 
 static L0_PYR_C_MG96: &[f64; 808] = &[
@@ -73205,9 +73205,9 @@ pub static PYR_C_MG96: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 2.80,
     size: 808,
-    l0: L0_PYR_C_MG96,
-    n0: N0_PYR_C_MG96,
-    k0: K0_PYR_C_MG96,
+    wavelengths: L0_PYR_C_MG96,
+    n: N0_PYR_C_MG96,
+    k: K0_PYR_C_MG96,
 };
 
 static L0_PYR_MG100: &[f64; 109] = &[
@@ -73261,9 +73261,9 @@ pub static PYR_MG100: StaticComponent = StaticComponent {
     state: "amorphous",
     rho: 2.71,
     size: 109,
-    l0: L0_PYR_MG100,
-    n0: N0_PYR_MG100,
-    k0: K0_PYR_MG100,
+    wavelengths: L0_PYR_MG100,
+    n: N0_PYR_MG100,
+    k: K0_PYR_MG100,
 };
 
 static L0_PYR_MG40: &[f64; 109] = &[
@@ -73316,9 +73316,9 @@ pub static PYR_MG40: StaticComponent = StaticComponent {
     state: "amorphous",
     rho: 3.3,
     size: 109,
-    l0: L0_PYR_MG40,
-    n0: N0_PYR_MG40,
-    k0: K0_PYR_MG40,
+    wavelengths: L0_PYR_MG40,
+    n: N0_PYR_MG40,
+    k: K0_PYR_MG40,
 };
 
 static L0_PYR_MG50: &[f64; 109] = &[
@@ -73371,9 +73371,9 @@ pub static PYR_MG50: StaticComponent = StaticComponent {
     state: "amorphous",
     rho: 3.2,
     size: 109,
-    l0: L0_PYR_MG50,
-    n0: N0_PYR_MG50,
-    k0: K0_PYR_MG50,
+    wavelengths: L0_PYR_MG50,
+    n: N0_PYR_MG50,
+    k: K0_PYR_MG50,
 };
 
 static L0_PYR_MG60: &[f64; 109] = &[
@@ -73426,9 +73426,9 @@ pub static PYR_MG60: StaticComponent = StaticComponent {
     state: "amorphous",
     rho: 3.1,
     size: 109,
-    l0: L0_PYR_MG60,
-    n0: N0_PYR_MG60,
-    k0: K0_PYR_MG60,
+    wavelengths: L0_PYR_MG60,
+    n: N0_PYR_MG60,
+    k: K0_PYR_MG60,
 };
 
 static L0_PYR_MG70: &[f64; 109] = &[
@@ -73485,9 +73485,9 @@ pub static PYR_MG70: StaticComponent = StaticComponent {
     state: "Amorphous",
     rho: 3.01,
     size: 109,
-    l0: L0_PYR_MG70,
-    n0: N0_PYR_MG70,
-    k0: K0_PYR_MG70,
+    wavelengths: L0_PYR_MG70,
+    n: N0_PYR_MG70,
+    k: K0_PYR_MG70,
 };
 
 static L0_PYR_MG80: &[f64; 109] = &[
@@ -73540,9 +73540,9 @@ pub static PYR_MG80: StaticComponent = StaticComponent {
     state: "Amorphous",
     rho: 2.09,
     size: 109,
-    l0: L0_PYR_MG80,
-    n0: N0_PYR_MG80,
-    k0: K0_PYR_MG80,
+    wavelengths: L0_PYR_MG80,
+    n: N0_PYR_MG80,
+    k: K0_PYR_MG80,
 };
 
 static L0_PYR_MG95: &[f64; 109] = &[
@@ -73595,9 +73595,9 @@ pub static PYR_MG95: StaticComponent = StaticComponent {
     state: "Amorphous",
     rho: 2.74,
     size: 109,
-    l0: L0_PYR_MG95,
-    n0: N0_PYR_MG95,
-    k0: K0_PYR_MG95,
+    wavelengths: L0_PYR_MG95,
+    n: N0_PYR_MG95,
+    k: K0_PYR_MG95,
 };
 
 static L0_SIC: &[f64; 1201] = &[
@@ -75116,9 +75116,9 @@ pub static SIC: StaticComponent = StaticComponent {
     state: "crystalline",
     rho: 3.22,
     size: 1201,
-    l0: L0_SIC,
-    n0: N0_SIC,
-    k0: K0_SIC,
+    wavelengths: L0_SIC,
+    n: N0_SIC,
+    k: K0_SIC,
 };
 
 static L0_SIO2: &[f64; 1507] = &[
@@ -78279,9 +78279,9 @@ pub static SIO2: StaticComponent = StaticComponent {
     state: "amorphous",
     rho: 2.65,
     size: 1507,
-    l0: L0_SIO2,
-    n0: N0_SIO2,
-    k0: K0_SIO2,
+    wavelengths: L0_SIO2,
+    n: N0_SIO2,
+    k: K0_SIO2,
 };
 
 #[cfg(test)]
@@ -78294,40 +78294,40 @@ mod tests {
         for &key in MATERIAL_KEYS {
             let comp = try_get_lnk_data(key)
                 .unwrap_or_else(|| panic!("MATERIAL_KEYS entry `{key}` missing from lookup"));
-            assert_eq!(comp.size, comp.l0.len(), "{key}: size != l0.len()");
-            assert_eq!(comp.size, comp.n0.len(), "{key}: size != n0.len()");
-            assert_eq!(comp.size, comp.k0.len(), "{key}: size != k0.len()");
+            assert_eq!(comp.size, comp.wavelengths.len(), "{key}: size != wavelengths.len()");
+            assert_eq!(comp.size, comp.n.len(), "{key}: size != n.len()");
+            assert_eq!(comp.size, comp.k.len(), "{key}: size != k.len()");
             assert!(comp.rho > 0.0 && comp.rho.is_finite(), "{key}: invalid rho");
             assert!(comp.size >= 2, "{key}: too few wavelengths");
 
             for i in 0..comp.size {
                 assert!(
-                    comp.l0[i] > 0.0 && comp.l0[i].is_finite(),
-                    "{key}: invalid l0[{i}] = {}",
-                    comp.l0[i]
+                    comp.wavelengths[i] > 0.0 && comp.wavelengths[i].is_finite(),
+                    "{key}: invalid wavelengths[{i}] = {}",
+                    comp.wavelengths[i]
                 );
                 assert!(
-                    comp.n0[i] > 0.0 && comp.n0[i].is_finite(),
-                    "{key}: invalid n0[{i}] = {}",
-                    comp.n0[i]
+                    comp.n[i] > 0.0 && comp.n[i].is_finite(),
+                    "{key}: invalid n[{i}] = {}",
+                    comp.n[i]
                 );
                 assert!(
-                    comp.k0[i] > 0.0 && comp.k0[i].is_finite(),
-                    "{key}: invalid k0[{i}] = {}",
-                    comp.k0[i]
+                    comp.k[i] > 0.0 && comp.k[i].is_finite(),
+                    "{key}: invalid k[{i}] = {}",
+                    comp.k[i]
                 );
                 if i > 0 {
                     assert!(
-                        comp.l0[i] >= comp.l0[i - 1],
-                        "{key}: decreasing l0 at index {i}: {} < {}",
-                        comp.l0[i],
-                        comp.l0[i - 1]
+                        comp.wavelengths[i] >= comp.wavelengths[i - 1],
+                        "{key}: decreasing wavelengths at index {i}: {} < {}",
+                        comp.wavelengths[i],
+                        comp.wavelengths[i - 1]
                     );
                 }
             }
             assert!(
-                comp.l0[comp.size - 1] > comp.l0[comp.size - 2],
-                "{key}: trailing duplicate l0 breaks long-wavelength extrapolation"
+                comp.wavelengths[comp.size - 1] > comp.wavelengths[comp.size - 2],
+                "{key}: trailing duplicate wavelength breaks long-wavelength extrapolation"
             );
         }
         assert!(try_get_lnk_data("nonexistent-material").is_none());

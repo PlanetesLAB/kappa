@@ -139,9 +139,9 @@ pub fn read_lnk_file(file: &str, rho_in: Option<f64>) -> Result<Component> {
         state,
         rho,
         size,
-        l0: RVector::from_vec(l0),
-        n0: RVector::from_vec(n0),
-        k0: RVector::from_vec(k0),
+        wavelengths: RVector::from_vec(l0),
+        n: RVector::from_vec(n0),
+        k: RVector::from_vec(k0),
     })
 }
 
@@ -283,7 +283,8 @@ pub fn read_wavelength_grid(file: &str) -> Result<(usize, RVector)> {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
 
     use approx::assert_relative_eq;
 
@@ -312,11 +313,11 @@ mod tests {
         assert_eq!(comp.state, "amorphous");
         assert_eq!(comp.size, 3);
         assert_relative_eq!(comp.rho, 2.5);
-        assert_relative_eq!(comp.l0[0], 0.1);
-        assert_relative_eq!(comp.l0[2], 10.0);
+        assert_relative_eq!(comp.wavelengths[0], 0.1);
+        assert_relative_eq!(comp.wavelengths[2], 10.0);
         // Clamped non-positive k values to 1e-10
-        assert_relative_eq!(comp.k0[0], 1e-10);
-        assert_relative_eq!(comp.k0[2], 1e-10);
+        assert_relative_eq!(comp.k[0], 1e-10);
+        assert_relative_eq!(comp.k[2], 1e-10);
 
         // Missing rho without fallback returns Err instead of panicking
         fs::write(&path, "2\n0.1 1.5 0.01\n1.0 1.6 0.02\n").unwrap();

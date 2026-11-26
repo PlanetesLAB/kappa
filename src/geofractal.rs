@@ -54,44 +54,38 @@ pub fn get_geometric_cross_section_tazaki(
     method: &IntegrationMethod,
     afac: &AFactor,
     cutoff: &FractalCutoff,
-    pn: f64,
-    k0: f64,
-    df: f64,
+    n_monomers: f64,
+    prefactor: f64,
+    fractal_dim: f64,
 ) -> Result<f64> {
-    let g: f64;
-
-    if pn <= 0.9999 {
+    if n_monomers <= 0.9999 {
         return Err(anyhow!("NotEnoughMonomers"));
     }
 
-    if !(0.9999..=3.0001).contains(&df) {
+    if !(0.9999..=3.0001).contains(&fractal_dim) {
         return Err(anyhow!("ExceedsMaxFractalDimension"));
     }
 
     let a = match afac {
         AFactor::Unity => 1.0,
         AFactor::TwoRegimes => {
-            let mut pnth = 11.0 * df - 8.5;
-            pnth = pnth.min(8.0);
-            if pn < pnth {
-                g = gfit(pn);
-                return Ok(g);
+            let n_threshold = (11.0 * fractal_dim - 8.5).min(8.0);
+            if n_monomers < n_threshold {
+                return Ok(minato_fit(n_monomers));
             }
-            let sigmath = mean_overlap_efficiency(method, cutoff, k0, df, pnth);
-            (1.0 + (pnth - 1.0) * sigmath) * gfit(pnth)
+            let sigma_threshold =
+                mean_overlap_efficiency(method, cutoff, prefactor, fractal_dim, n_threshold);
+            (1.0 + (n_threshold - 1.0) * sigma_threshold) * minato_fit(n_threshold)
         }
     };
 
-    let sigma = mean_overlap_efficiency(method, cutoff, k0, df, pn);
-
-    g = a / (1.0 + (pn - 1.0) * sigma);
-
-    Ok(g)
+    let sigma = mean_overlap_efficiency(method, cutoff, prefactor, fractal_dim, n_monomers);
+    Ok(a / (1.0 + (n_monomers - 1.0) * sigma))
 }
 
-/// Minato et al. (2006)'s fitting formula for `N < 16`
-fn gfit(pn: f64) -> f64 {
-    12.5 * pn.powf(-0.315) * (-2.53 / pn.powf(0.0920)).exp()
+/// Minato et al. (2006) fitting formula for $N < 16$.
+fn minato_fit(n_monomers: f64) -> f64 {
+    12.5 * n_monomers.powf(-0.315) * (-2.53 / n_monomers.powf(0.0920)).exp()
 }
 
 /// Compute the mean overlapping efficiency
@@ -146,55 +140,56 @@ fn gfit(pn: f64) -> f64 {
 fn mean_overlap_efficiency(
     method: &IntegrationMethod,
     cutoff: &FractalCutoff,
-    k0: f64,
-    df: f64,
-    pn: f64,
+    prefactor: f64,
+    fractal_dim: f64,
+    n_monomers: f64,
 ) -> f64 {
     let xmax = 25.0;
     let nx = 1000;
 
-    let aicgm: f64;
+    let gamma_arg: f64;
     let xmin: f64;
 
     let mut sigma: f64;
 
     let factor: f64 = match cutoff {
         FractalCutoff::Gaussian => {
-            aicgm = 0.5 * (df - 2.0);
-            xmin = df * (k0 / pn).powf(2.0 / df);
-            xmin / 16.0 / gamma(0.5 * df)
+            gamma_arg = 0.5 * (fractal_dim - 2.0);
+            xmin = fractal_dim * (prefactor / n_monomers).powf(2.0 / fractal_dim);
+            xmin / 16.0 / gamma(0.5 * fractal_dim)
         }
         FractalCutoff::Exponential => {
-            aicgm = df - 2.0;
-            xmin = 2.0 * (0.5 * df * (df + 1.0)).sqrt() * (k0 / pn).powf(1.0 / df);
-            xmin * xmin / 16.0 / gamma(df)
+            gamma_arg = fractal_dim - 2.0;
+            xmin = 2.0
+                * (0.5 * fractal_dim * (fractal_dim + 1.0)).sqrt()
+                * (prefactor / n_monomers).powf(1.0 / fractal_dim);
+            xmin * xmin / 16.0 / gamma(fractal_dim)
         }
         FractalCutoff::FractalDimension => {
-            aicgm = (df - 2.0) / df;
-            xmin = 2.0f64.powf(df - 1.0) * k0 / pn;
-            xmin.powf(2.0 / df) / 16.0
+            gamma_arg = (fractal_dim - 2.0) / fractal_dim;
+            xmin = 2.0_f64.powf(fractal_dim - 1.0) * prefactor / n_monomers;
+            xmin.powf(2.0 / fractal_dim) / 16.0
         }
     };
 
-    if df > 2.0 && *method == IntegrationMethod::AnAn {
-        sigma = factor * gamma(aicgm) * gamma_ur(aicgm, xmin);
+    if fractal_dim > 2.0 && *method == IntegrationMethod::AnAn {
+        sigma = factor * gamma(gamma_arg) * gamma_ur(gamma_arg, xmin);
     } else {
         let nxf = nx as f64;
         let dlnx = (xmax / xmin).ln() / (nxf - 1.0);
         let mut x = RVector::zeros(nx);
-        let mut sang = RVector::ones(nx);
+        let mut angular_factor = RVector::ones(nx);
         sigma = 0.0;
         for i in 0..nx {
-            let ir = i as f64;
-            x[i] = (xmin.ln() + ir * dlnx).exp();
+            x[i] = (xmin.ln() + (i as f64) * dlnx).exp();
             if *method == IntegrationMethod::NumNum {
-                sang[i] = angular_integration(cutoff, x[i], xmin, df);
+                angular_factor[i] = angular_integration(cutoff, x[i], xmin, fractal_dim);
             }
         }
         for i in 0..nx - 1 {
             sigma += f64::midpoint(
-                radial_integrand(aicgm, x[i]) * sang[i],
-                radial_integrand(aicgm, x[i + 1]) * sang[i + 1],
+                radial_integrand(gamma_arg, x[i]) * angular_factor[i],
+                radial_integrand(gamma_arg, x[i + 1]) * angular_factor[i + 1],
             );
         }
         sigma *= dlnx * factor;
@@ -208,36 +203,31 @@ fn radial_integrand(a: f64, x: f64) -> f64 {
     x.powf(a) * (-x).exp()
 }
 
-fn angular_integration(cutoff: &FractalCutoff, x: f64, xmin: f64, df: f64) -> f64 {
+fn angular_integration(cutoff: &FractalCutoff, x: f64, xmin: f64, fractal_dim: f64) -> f64 {
     let nmax_u = 1000;
-
-    let mut sang: f64;
 
     let rho: f64 = match cutoff {
         FractalCutoff::Gaussian => (x / xmin).sqrt(),
         FractalCutoff::Exponential => x / xmin,
-        FractalCutoff::FractalDimension => (x / xmin).powf(1.0 / df),
+        FractalCutoff::FractalDimension => (x / xmin).powf(1.0 / fractal_dim),
     };
     let mut u = RVector::zeros(nmax_u);
 
-    sang = 0.0;
+    let mut angular_sum = 0.0;
     let umin = 0.0;
     let umax = 1.0 / rho;
 
     let du = (umax - umin) / (nmax_u - 1) as f64;
     for (j, val) in u.iter_mut().enumerate().take(nmax_u) {
-        let jf = j as f64;
-        *val = umin + du * jf;
+        *val = umin + du * (j as f64);
     }
     for j in 0..nmax_u - 1 {
-        sang += f64::midpoint(
+        angular_sum += f64::midpoint(
             angular_integrand(rho, u[j]),
             angular_integrand(rho, u[j + 1]),
         ) * du;
     }
-    sang = 16.0 * rho * rho * sang / PI;
-
-    sang
+    16.0 * rho * rho * angular_sum / PI
 }
 
 /// Angular integrand function in `u` space
