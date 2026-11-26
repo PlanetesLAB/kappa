@@ -1,4 +1,30 @@
-//! Core opacity and scattering matrix orchestration for `kappa`.
+//! High-level dust opacity and Mueller scattering matrix pipeline.
+//!
+//! This module provides the two-stage library interface of `kappa`:
+//!
+//! 1. Describe the dust population, composition, wavelength grid, and
+//!    scattering theory declaratively in [`KappaConfig`] (or start from a
+//!    built-in preset such as [`KappaConfig::diana`] or
+//!    [`KappaConfig::dsharp`]).
+//! 2. Validate inputs, load and regrid optical constants, and blend core and
+//!    mantle refractive indices via [`KappaConfig::prepare`], yielding a
+//!    [`PreparedModel`].
+//! 3. Evaluate mass opacities and Mueller matrices in memory with
+//!    [`PreparedModel::compute`] (returning a [`Particle`]) or execute the full
+//!    file-output workflow with [`PreparedModel::run`].
+//!
+//! Multi-component cores and mantles (including vacuum porosity) are mixed with
+//! the [Bruggeman (1935)](https://ui.adsabs.harvard.edu/abs/1935AnP...416..636B/abstract)
+//! effective medium rule, and mantles are coated onto cores with the
+//! [Maxwell Garnett (1904)](https://ui.adsabs.harvard.edu/abs/1904RSPTA.203..385G/abstract)
+//! rule. Four scattering theories are supported via [`ScatteringMethod`]:
+//! Lorenz-Mie theory, the Distribution of Hollow Spheres (DHS;
+//! [Min et al. 2005](https://ui.adsabs.harvard.edu/abs/2005A%26A...432..909M/abstract)),
+//! Modified Mean Field (MMF) aggregate theory
+//! ([Tazaki & Tanaka 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract)),
+//! and the Continuous Distribution of Ellipsoids (CDE;
+//! [Bohren & Huffman 1983](https://ui.adsabs.harvard.edu/abs/1983asls.book.....B/abstract),
+//! Ch. 12).
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -82,7 +108,12 @@ impl From<anyhow::Error> for KappaError {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaterialKind {
+    /// Refractory core component (blended with other core components and
+    /// `core_porosity` via the Bruggeman rule).
     Core,
+    /// Coating mantle component (blended with other mantle components and
+    /// `mantle_porosity` via the Bruggeman rule, then coated onto the core via
+    /// the Maxwell Garnett rule).
     Mantle,
 }
 
@@ -90,15 +121,26 @@ pub enum MaterialKind {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum MaterialSource {
-    /// Key of a built-in optical constant table (e.g. `"pyr-mg70"`, `"c-z"`).
+    /// Key of a built-in optical constant table (for example, `"pyr-mg70"` or
+    /// `"c-z"`), resolved via [`crate::components::try_get_lnk_data`].
     Builtin(String),
-    /// Path to an external `.lnk` file.
+    /// Path to an external `.lnk` optical constants file, read via
+    /// [`crate::io::read_lnk_file`].
     LnkFile(PathBuf),
-    /// Wavelength-independent refractive index $m = n + i k$ and density $\rho$.
-    Constant { n: f64, k: f64, density: f64 },
+    /// Wavelength-independent complex refractive index $m = n + i k$ and bulk
+    /// density $\rho$ ($\mathrm{g\thinspace cm^{-3}}$).
+    Constant {
+        /// Real part of the refractive index $n$.
+        n: f64,
+        /// Imaginary part (extinction coefficient) $k$.
+        k: f64,
+        /// Bulk material mass density $\rho$ in $\mathrm{g\thinspace cm^{-3}}$.
+        density: f64,
+    },
 }
 
 impl MaterialSource {
+    /// Returns a human-readable identifier for headers and diagnostic output.
     #[must_use]
     pub fn label(&self) -> String {
         match self {
@@ -109,16 +151,21 @@ impl MaterialSource {
     }
 }
 
-/// A material component in a dust grain mixture.
+/// A single material component in a dust grain mixture.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Material {
+    /// Source of optical constants and bulk density.
     pub source: MaterialSource,
+    /// Placement in the grain core or mantle.
     pub kind: MaterialKind,
+    /// Relative mass weight (automatically normalized across all components in
+    /// [`KappaConfig::prepare`]).
     pub mass_fraction: f64,
 }
 
 impl Material {
+    /// Constructs a component backed by a built-in optical constant key.
     #[must_use]
     pub fn builtin(key: impl Into<String>, kind: MaterialKind, mass_fraction: f64) -> Self {
         Self {
@@ -128,6 +175,7 @@ impl Material {
         }
     }
 
+    /// Constructs a component read from an external `.lnk` file.
     #[must_use]
     pub fn lnk_file(path: impl Into<PathBuf>, kind: MaterialKind, mass_fraction: f64) -> Self {
         Self {
@@ -137,6 +185,8 @@ impl Material {
         }
     }
 
+    /// Constructs a component with wavelength-independent optical constants
+    /// $m = n + i k$ and bulk density `density` ($\mathrm{g\thinspace cm^{-3}}$).
     #[must_use]
     pub fn constant(n: f64, k: f64, density: f64, kind: MaterialKind, mass_fraction: f64) -> Self {
         Self {
@@ -147,36 +197,67 @@ impl Material {
     }
 }
 
-/// Grain size distribution specification.
+/// Grain size distribution $f(a)$ specification (radii in $\mu\mathrm{m}$).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum SizeDistribution {
+    /// Power-law number distribution $f(a) \propto a^{-p}$ over
+    /// $[a_{\min}, a_{\max}]$ (sampled on a logarithmic grid with weights
+    /// $n(a) \propto a^{1 - p}$).
     PowerLaw {
+        /// Minimum grain radius $a_{\min}$ ($\mu\mathrm{m}$).
         min: f64,
+        /// Maximum grain radius $a_{\max}$ ($\mu\mathrm{m}$).
         max: f64,
+        /// Positive power-law slope $p \ge 0$ in $f(a) \propto a^{-p}$.
         slope: f64,
+        /// Optional number of size bins; defaults to
+        /// $\max(\lfloor 15 \log_{10}(a_{\max}/a_{\min}) + 1 \rfloor, 5)$
+        /// (or $1$ when $a_{\min} = a_{\max}$).
         bins: Option<usize>,
     },
+    /// Log-normal number distribution in $\ln a$,
+    /// $n(a) \propto \exp\left(-\frac{[\ln(a / \bar{a})]^{2}}{2\sigma^{2}}\right)$
+    /// per logarithmic bin over $[a_{\min}, a_{\max}]$.
     LogNormal {
+        /// Minimum grain radius $a_{\min}$ ($\mu\mathrm{m}$).
         min: f64,
+        /// Maximum grain radius $a_{\max}$ ($\mu\mathrm{m}$).
         max: f64,
+        /// Characteristic peak radius $\bar{a}$ ($\mu\mathrm{m}$).
         mean: f64,
+        /// Logarithmic width $\sigma > 0$ (dimensionless).
         sigma: f64,
+        /// Optional number of logarithmically spaced size bins.
         bins: Option<usize>,
     },
+    /// Normal (Gaussian) number distribution in linear radius $a$,
+    /// $f(a) \propto \exp\left(-\frac{(a - \bar{a})^{2}}{2\sigma^{2}}\right)$
+    /// over $[a_{\min}, a_{\max}]$.
     Normal {
+        /// Minimum grain radius $a_{\min}$ ($\mu\mathrm{m}$).
         min: f64,
+        /// Maximum grain radius $a_{\max}$ ($\mu\mathrm{m}$).
         max: f64,
+        /// Mean grain radius $\bar{a}$ ($\mu\mathrm{m}$).
         mean: f64,
+        /// Standard deviation $\sigma > 0$ ($\mu\mathrm{m}$).
         sigma: f64,
+        /// Optional number of logarithmically spaced size bins.
         bins: Option<usize>,
     },
+    /// Single grain radius $a$ ($\mu\mathrm{m}$).
     Monodisperse {
+        /// Grain radius $a > 0$ ($\mu\mathrm{m}$).
         radius: f64,
     },
+    /// Arbitrary user-supplied discrete size bins and number weights.
     Tabulated {
+        /// Bin radii $a_{i} > 0$ ($\mu\mathrm{m}$).
         radii: Vec<f64>,
+        /// Non-negative number weights $w_{i} \ge 0$ matching `radii`.
         weights: Vec<f64>,
+        /// Optional source file path recorded in output headers.
         source: Option<PathBuf>,
     },
 }
@@ -193,6 +274,9 @@ impl Default for SizeDistribution {
 }
 
 impl SizeDistribution {
+    /// Returns `(a_min, a_max, n_bins)` for this distribution, ordering bounds
+    /// ascending and applying the default 15-bins-per-decade heuristic when
+    /// `bins` is `None`.
     fn bounds_and_count(&self) -> (f64, f64, usize) {
         match self {
             Self::PowerLaw { min, max, bins, .. }
@@ -221,13 +305,19 @@ impl SizeDistribution {
         }
     }
 
-    /// Computes $[\langle a \rangle, \langle a^2 \rangle^{1/2}, \langle a^3 \rangle^{1/3}]$.
+    /// Computes the first three number-weighted root moments
+    /// $[\langle a \rangle, \langle a^{2} \rangle^{1/2}, \langle a^{3} \rangle^{1/3}]$
+    /// in $\mu\mathrm{m}$.
     #[must_use]
     pub fn moments(&self) -> [f64; 3] {
         let (min, max, _) = self.bounds_and_count();
         self.moments_in_range(min, max)
     }
 
+    /// Evaluates $[\langle a \rangle, \langle a^{2} \rangle^{1/2}, \langle a^{3} \rangle^{1/3}]$
+    /// over a sub-interval `[amin, amax]` using $1000$ logarithmically spaced
+    /// points for analytic distributions (or exact sums for monodisperse and
+    /// tabulated distributions).
     fn moments_in_range(&self, amin: f64, amax: f64) -> [f64; 3] {
         match self {
             Self::Monodisperse { radius } => [*radius, *radius, *radius],
@@ -298,13 +388,30 @@ impl SizeDistribution {
     }
 }
 
-/// Wavelength grid specification in micrometers.
+/// Wavelength grid specification in $\mu\mathrm{m}$.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum WavelengthGrid {
-    LogSpaced { min: f64, max: f64, count: usize },
-    Single { wavelength: f64 },
-    Tabulated { wavelengths: Vec<f64> },
+    /// Logarithmically spaced grid of `count` points from `min` to `max`
+    /// ($\mu\mathrm{m}$).
+    LogSpaced {
+        /// Minimum wavelength $\lambda_{\min} > 0$ ($\mu\mathrm{m}$).
+        min: f64,
+        /// Maximum wavelength $\lambda_{\max} > 0$ ($\mu\mathrm{m}$).
+        max: f64,
+        /// Number of wavelength points $N_{\lambda}$.
+        count: usize,
+    },
+    /// Single monochromatic wavelength $\lambda > 0$ ($\mu\mathrm{m}$).
+    Single {
+        /// Wavelength $\lambda > 0$ ($\mu\mathrm{m}$).
+        wavelength: f64,
+    },
+    /// Arbitrary user-supplied wavelength table ($\mu\mathrm{m}$).
+    Tabulated {
+        /// Non-empty list of positive wavelengths ($\mu\mathrm{m}$).
+        wavelengths: Vec<f64>,
+    },
 }
 
 impl Default for WavelengthGrid {
@@ -317,13 +424,14 @@ impl Default for WavelengthGrid {
     }
 }
 
-/// Structural parameterization for MMF fractal aggregates.
+/// Structural parameterization for Modified Mean Field (MMF) fractal aggregates.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AggregateStructure {
-    /// Fractal dimension $d_f \in (1, 3]$.
+    /// Fixed fractal dimension $d_{f} \in (1, 3]$.
     FractalDimension(f64),
-    /// Volume filling factor $f \in (0, 1]$.
+    /// Fixed volume filling factor $f \in (0, 1]$, converted per grain size to
+    /// $d_{f} = 3 \ln N / \ln(N / f)$.
     FillingFactor(f64),
 }
 
@@ -331,22 +439,45 @@ pub enum AggregateStructure {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScatteringMethod {
-    /// Lorenz-Mie theory for compact homogeneous spheres.
-    Mie { size_limit: f64 },
-    /// Distribution of Hollow Spheres (Min et al. 2005).
-    Dhs {
-        fmax: f64,
+    /// Lorenz-Mie theory for compact homogeneous spheres
+    /// ([De Rooij & Van der Stap 1984](https://ui.adsabs.harvard.edu/abs/1984A%26A...131..237D/abstract)).
+    Mie {
+        /// Upper size-parameter cutoff $x_{\max}$ (default $10^{8}$).
         size_limit: f64,
+    },
+    /// Distribution of Hollow Spheres (DHS;
+    /// [Min, Hovenier & de Koter 2005](https://ui.adsabs.harvard.edu/abs/2005A%26A...432..909M/abstract)),
+    /// averaging over inner cavity volume fractions $f \in [0, f_{\max}]$ via
+    /// 20-point Gauss-Legendre quadrature (or compact Mie when $f_{\max} \le 0.01$).
+    Dhs {
+        /// Maximum cavity volume fraction $f_{\max} \in [0, 1)$.
+        fmax: f64,
+        /// Size parameter above which DHS falls back directly to compact Mie
+        /// (default $10^{8}$).
+        size_limit: f64,
+        /// Effective outer-shell size-parameter cap passed to the core-shell
+        /// solver (default $10^{4}$).
         dhs_size_limit: f64,
     },
-    /// Modified Mean Field theory for fractal aggregates (Tazaki & Tanaka 2018).
+    /// Modified Mean Field (MMF) theory for porous fractal aggregates
+    /// ([Tazaki & Tanaka 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract)).
     Mmf {
+        /// Monomer radius $a_{0} > 0$ ($\mu\mathrm{m}$); must be strictly
+        /// smaller than the minimum aggregate radius.
         monomer_radius: f64,
+        /// Aggregate structure specified by fractal dimension or filling factor.
         structure: AggregateStructure,
+        /// Optional fractal prefactor $k_{0} > 0$; defaults to
+        /// $(5/3)^{d_{f}/2}$ when `None`.
         prefactor: Option<f64>,
+        /// If `true`, retain Mueller elements and $g$ even at wavelengths where
+        /// the aggregate phase shift exceeds unity ($\Delta\phi > 1$); if
+        /// `false`, zero them out at untrusted wavelengths.
         keep_approximate_scattering: bool,
     },
-    /// Continuous Distribution of Ellipsoids in the Rayleigh limit.
+    /// Continuous Distribution of Ellipsoids (CDE) in the Rayleigh limit
+    /// ([Bohren & Huffman 1983](https://ui.adsabs.harvard.edu/abs/1983asls.book.....B/abstract),
+    /// Ch. 12) paired with the exact Rayleigh scattering matrix.
     Cde,
 }
 
@@ -357,11 +488,14 @@ impl Default for ScatteringMethod {
 }
 
 impl ScatteringMethod {
+    /// Returns [`ScatteringMethod::Mie`] with default `size_limit = 1e8`.
     #[must_use]
     pub const fn mie() -> Self {
         Self::Mie { size_limit: 1e8 }
     }
 
+    /// Returns [`ScatteringMethod::Dhs`] with cavity fraction `fmax` and
+    /// default limits (`size_limit = 1e8`, `dhs_size_limit = 1e4`).
     #[must_use]
     pub const fn dhs(fmax: f64) -> Self {
         Self::Dhs {
@@ -371,6 +505,8 @@ impl ScatteringMethod {
         }
     }
 
+    /// Returns [`ScatteringMethod::Mmf`] with `monomer_radius`, `structure`,
+    /// automatic prefactor, and `keep_approximate_scattering = false`.
     #[must_use]
     pub const fn mmf(monomer_radius: f64, structure: AggregateStructure) -> Self {
         Self::Mmf {
@@ -382,27 +518,58 @@ impl ScatteringMethod {
     }
 }
 
-/// Declarative dust opacity configuration.
+/// Declarative configuration for a dust opacity calculation.
 #[allow(clippy::struct_excessive_bools)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct KappaConfig {
+    /// Core and mantle material components (at least one core component, at
+    /// most $20$ total).
     pub materials: Vec<Material>,
+    /// Vacuum volume fraction $p_{\mathrm{core}} \in [0, 1)$ mixed into the
+    /// grain core via the Bruggeman rule.
     pub core_porosity: f64,
+    /// Vacuum volume fraction $p_{\mathrm{mantle}} \in [0, 1)$ mixed into the
+    /// grain mantle via the Bruggeman rule.
     pub mantle_porosity: f64,
+    /// Grain size distribution specification.
     pub size_distribution: SizeDistribution,
+    /// Wavelength grid specification ($\mu\mathrm{m}$).
     pub wavelengths: WavelengthGrid,
+    /// Scattering theory and solver parameters.
     pub method: ScatteringMethod,
+    /// Number of scattering angles (must be even and $\ge 2$; default $180$).
     pub n_angles: usize,
+    /// Optional forward-scattering truncation angle $\theta_{\mathrm{chop}} \in [0, 180)$
+    /// in degrees: flattens $F_{ij}(\theta < \theta_{\mathrm{chop}})$ to
+    /// $F_{ij}(\theta_{\mathrm{chop}})$ and rescales $\kappa_{\mathrm{sca}}$
+    /// and $F_{ij}$ consistently.
     pub chop_angle: Option<f64>,
+    /// If `true`, include the six Mueller scattering matrix elements in written
+    /// opacity files.
     pub write_scatter: bool,
+    /// If `true`, write RADMC-3D-formatted `.inp` files ($Z_{ij}$ on $N_{\theta} + 1$
+    /// edge angles including $0^{\circ}$ and $180^{\circ}$); otherwise write
+    /// standard `.dat` files ($F_{ij}$ on $N_{\theta}$ midpoint angles).
     pub for_radmc: bool,
+    /// Optional wavelength intervals $(\lambda_{\mathrm{lo}}, \lambda_{\mathrm{hi}})$
+    /// in $\mu\mathrm{m}$ for sparse scattering-matrix output (only matrices in
+    /// or adjacent to these ranges are written).
     pub sparse_ranges: Vec<(f64, f64)>,
+    /// When `Some(n_sub)`, split a power-law size distribution into `na`
+    /// separate output files, each averaged over `n_sub` sub-grains.
     pub split_subgrains: Option<usize>,
+    /// If `true`, write `kappa_lam.dat` and `kappa_sd.dat` and exit without
+    /// running the scattering solvers.
     pub write_grid: bool,
+    /// If `true`, write the blended refractive index table `kappa_mix.lnk` and
+    /// exit without running the scattering solvers.
     pub blend_only: bool,
+    /// Destination directory for all written files (default `"output"`).
     pub outdir: PathBuf,
+    /// Base filename stem for opacity output files (default `"kappa_opacity"`).
     pub label: String,
+    /// If `true`, suppress progress bars and non-fatal warnings on `stderr`.
     pub quiet: bool,
 }
 
@@ -431,7 +598,10 @@ impl Default for KappaConfig {
 }
 
 impl KappaConfig {
-    /// DIANA standard dust mixture (87% pyroxene, 13% amorphous carbon, 25% porosity).
+    /// DiscAnalysis (DIANA) standard dust mixture
+    /// ([Woitke et al. 2016](https://ui.adsabs.harvard.edu/abs/2016A%26A...586A.103W/abstract)):
+    /// 87% amorphous pyroxene (`pyr-mg70`), 13% amorphous carbon (`c-z`), and
+    /// 25% core porosity.
     #[must_use]
     pub fn diana() -> Self {
         Self {
@@ -444,7 +614,11 @@ impl KappaConfig {
         }
     }
 
-    /// Ice-free DSHARP dust mixture (astrosilicate, organics, troilite).
+    /// Ice-free Disk Substructures at High Angular Resolution Project (DSHARP)
+    /// dust mixture
+    /// ([Birnstiel et al. 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...869L..45B/abstract)):
+    /// astrosilicate (`astrosil`), refractory organics (`c-org`), and troilite
+    /// (`fes`).
     #[must_use]
     pub fn dsharp_no_ice() -> Self {
         Self {
@@ -457,7 +631,10 @@ impl KappaConfig {
         }
     }
 
-    /// DSHARP dust mixture (astrosilicate, organics, troilite, water ice).
+    /// Full Disk Substructures at High Angular Resolution Project (DSHARP)
+    /// dust mixture
+    /// ([Birnstiel et al. 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...869L..45B/abstract)):
+    /// [`Self::dsharp_no_ice`] plus 20% crystalline water ice (`h2o-w`).
     #[must_use]
     pub fn dsharp() -> Self {
         let mut cfg = Self::dsharp_no_ice();
@@ -492,32 +669,61 @@ impl KappaConfig {
     }
 }
 
+/// Normalized material metadata retained inside [`PreparedModel`] for output
+/// file headers.
 #[derive(Clone, Debug)]
 struct ResolvedMaterial {
+    /// Display label from [`MaterialSource::label`].
     label: String,
+    /// Core or mantle placement.
     kind: MaterialKind,
+    /// Bulk density $\rho$ ($\mathrm{g\thinspace cm^{-3}}$).
     density: f64,
+    /// Normalized mass fraction (sums to $1$ across all components).
     mass_fraction: f64,
 }
 
-/// Validated, mixed dust model ready for opacity calculation and file output.
+/// Validated, effective-medium-mixed dust model ready for opacity calculation
+/// and file output.
 #[derive(Debug)]
 pub struct PreparedModel {
+    /// Validated copy of the input configuration.
     config: KappaConfig,
+    /// Wavelength grid ($\mu\mathrm{m}$).
     wavelengths: RVector,
+    /// Minimum wavelength $\lambda_{\min}$ ($\mu\mathrm{m}$).
     lmin: f64,
+    /// Maximum wavelength $\lambda_{\max}$ ($\mu\mathrm{m}$).
     lmax: f64,
+    /// Minimum grain radius $a_{\min}$ ($\mu\mathrm{m}$).
     amin: f64,
+    /// Maximum grain radius $a_{\max}$ ($\mu\mathrm{m}$).
     amax: f64,
+    /// Number of grain size bins.
     na: usize,
+    /// Normalized material list (cores sorted before mantles).
     materials: Vec<ResolvedMaterial>,
+    /// Porosity-included average grain density $\rho_{\mathrm{av}}$
+    /// ($\mathrm{g\thinspace cm^{-3}}$).
     rho_av: f64,
+    /// Effective real refractive index $n(\lambda)$ on `wavelengths`.
     n_blend: RVector,
+    /// Effective imaginary refractive index $k(\lambda)$ on `wavelengths`.
     k_blend: RVector,
+    /// Wavelength indices selected for sparse scattering-matrix output.
     sparse_indices: HashSet<usize>,
 }
 
 impl PreparedModel {
+    /// Validates `input`, builds the wavelength grid, loads and regrids each
+    /// component's optical constants, derives core/mantle volume fractions and
+    /// average density, and computes the Bruggeman/Maxwell Garnett blended
+    /// refractive index across all wavelengths.
+    ///
+    /// # Errors
+    /// Returns [`KappaError`] if any parameter is out of range, a built-in key
+    /// is unknown, an `.lnk` file fails to load, or effective-medium mixing
+    /// encounters invalid volume fractions.
     fn from_config(input: &KappaConfig) -> Result<Self, KappaError> {
         let mut config = input.clone();
 
@@ -1005,25 +1211,29 @@ impl PreparedModel {
         &self.config
     }
 
-    /// Wavelength grid in micrometers.
+    /// Wavelength grid in $\mu\mathrm{m}$.
     #[must_use]
     pub fn wavelengths(&self) -> &RVector {
         &self.wavelengths
     }
 
-    /// Blended refractive index `(n, k)` on [`Self::wavelengths`].
+    /// Effective-medium blended refractive index `(n, k)` on
+    /// [`Self::wavelengths`].
     #[must_use]
     pub fn blended_refractive_index(&self) -> (&RVector, &RVector) {
         (&self.n_blend, &self.k_blend)
     }
 
-    /// Average grain density in $\mathrm{g\,cm^{-3}}$ including porosity.
+    /// Average grain mass density $\rho_{\mathrm{av}}$ in
+    /// $\mathrm{g\thinspace cm^{-3}}$, including core and mantle porosity.
     #[must_use]
     pub fn average_density(&self) -> f64 {
         self.rho_av
     }
 
-    /// Size distribution moments $[\langle a \rangle, \langle a^2 \rangle^{1/2}, \langle a^3 \rangle^{1/3}]$.
+    /// Number-weighted root moments
+    /// $[\langle a \rangle, \langle a^{2} \rangle^{1/2}, \langle a^{3} \rangle^{1/3}]$
+    /// in $\mu\mathrm{m}$.
     #[must_use]
     pub fn size_moments(&self) -> [f64; 3] {
         self.config.size_distribution.moments()
@@ -1145,6 +1355,13 @@ impl PreparedModel {
         self.write_opacities(&self.config.label, &p)
     }
 
+    /// Constructs the discrete grain-size grid `(radii, weights)` over
+    /// `[amin, amax]` with `ns` bins, normalized so that the total grain volume
+    /// $\sum w_{i} a_{i}^{3} = 1$.
+    ///
+    /// # Errors
+    /// Returns [`KappaError::InvalidConfig`] if the total grain volume is
+    /// non-positive.
     fn build_size_grid(
         &self,
         amin: f64,
@@ -1228,6 +1445,15 @@ impl PreparedModel {
         }
     }
 
+    /// Evaluates mass opacities, asymmetry parameter $g$, and Mueller matrices
+    /// across all wavelengths for the size sub-interval `[amin, amax]` with
+    /// `ns` bins.
+    ///
+    /// Builds the 20-point Gauss-Legendre DHS cavity quadrature nodes on
+    /// $[0.01, f_{\max}]$ (when $f_{\max} > 0.01$) and forward-hemisphere
+    /// angle cosines, then dispatches [`Self::over_wavelengths`] either
+    /// sequentially (when outer sub-grain parallelism is active) or in parallel
+    /// via `rayon`.
     fn compute_range(
         &self,
         amin: f64,
@@ -1324,6 +1550,16 @@ impl PreparedModel {
         })
     }
 
+    /// Integrates cross sections and Mueller scattering matrix elements over
+    /// the grain-size grid at a single wavelength index `ilam`.
+    ///
+    /// Dispatches to the configured [`ScatteringMethod`] (Lorenz-Mie, DHS with
+    /// automatic Mie fallback, MMF, or analytical Rayleigh-limit CDE), converts
+    /// integrated cross sections to mass opacities
+    /// $\kappa = 10^{4} C / M$ ($\mathrm{cm^{2}\thinspace g^{-1}}$), applies
+    /// optional forward-peak chopping (`chop_angle`), computes
+    /// $g = \langle \cos\theta \rangle$, and zeroes untrusted MMF scattering
+    /// matrices unless `keep_approximate_scattering` is set.
     fn over_wavelengths(&self, ilam: usize, kps: &KappaState) -> Result<KappaResult, KappaError> {
         let qabsdqext_min = 1e-4;
         let wavelength = self.wavelengths[ilam];
@@ -1770,6 +2006,8 @@ impl PreparedModel {
         })
     }
 
+    /// Creates `self.config.outdir` if absent and opens a fresh writable file
+    /// at `outdir/filename`, removing any pre-existing file at that path.
     fn create_output_file(&self, filename: &str) -> Result<File, KappaError> {
         fs::create_dir_all(&self.config.outdir)?;
         let filepath = self.config.outdir.join(filename);
@@ -1875,6 +2113,18 @@ impl PreparedModel {
         self.write_opacities_with_bounds(fname, p, self.amin, self.amax, self.na)
     }
 
+    /// Writes computed opacities (and optionally the scattering matrix) to
+    /// `{fname}.{ext}` using explicit size-distribution bounds `[amin, amax]`
+    /// and bin count `na` (used by both standard single-file and split-grain
+    /// output).
+    ///
+    /// In RADMC-3D mode (`for_radmc = true`), writes `.inp` files with
+    /// $Z_{ij}(\theta)$ in $\mathrm{cm^{2}\thinspace g^{-1}\thinspace sr^{-1}}$
+    /// interpolated onto $N_{\theta} + 1$ edge angles ($0^{\circ}$ to
+    /// $180^{\circ}$) and renormalized to
+    /// $2\pi \int_{0}^{\pi} Z_{11}\sin\theta\thinspace\mathrm{d}\theta = \kappa_{\mathrm{sca}}$.
+    /// Otherwise writes `.dat` files with dimensionless $F_{ij}(\theta)$ on
+    /// $N_{\theta}$ midpoint angles.
     fn write_opacities_with_bounds(
         &self,
         fname: &str,
@@ -2206,6 +2456,14 @@ impl PreparedModel {
     }
 }
 
+/// Computes the set of wavelength indices to include in sparse scattering
+/// matrix output from user-specified wavelength intervals `ranges`
+/// ($\mu\mathrm{m}$).
+///
+/// Ranges narrower than a single logarithmic grid step are expanded slightly
+/// so at least one grid point is matched, and the immediate neighboring
+/// indices (`il - 1`, `il + 1`) of every matched wavelength are also included
+/// for smooth interpolation.
 fn compute_sparse_indices(wavelengths: &RVector, ranges: &[(f64, f64)]) -> HashSet<usize> {
     let mut indices = HashSet::new();
     let nlam = wavelengths.len();
@@ -2242,74 +2500,130 @@ fn compute_sparse_indices(wavelengths: &RVector, ranges: &[(f64, f64)]) -> HashS
     indices
 }
 
+/// Borrowed per-range quadrature grids shared across wavelength evaluations in
+/// [`PreparedModel::over_wavelengths`].
 #[derive(Debug)]
 struct KappaState<'a> {
+    /// Number of grain-size bins.
     ns: usize,
+    /// Number of DHS cavity-fraction quadrature nodes ($20$ or $1$).
     nf: usize,
+    /// Representative cavity-fraction index used when falling back to Mie at
+    /// large size parameters.
     ifmn: usize,
+    /// Grain radii $a_{i}$ ($\mu\mathrm{m}$).
     r: &'a RVector,
+    /// Volume-normalized grain-size weights $w_{i}$.
     nr: &'a RVector,
+    /// DHS cavity-fraction Gauss-Legendre nodes $f_{m}$.
     f: &'a RVector,
+    /// DHS cavity-fraction Gauss-Legendre weights $W_{m}$.
     wf: &'a RVector,
+    /// Forward-hemisphere angle cosines $\cos\theta_{j}$ for DHS.
     mu: &'a RVector,
 }
 
-/// Six independent elements of the Mueller scattering matrix for randomly oriented particles.
+/// Six independent elements of the normalized Mueller scattering matrix for
+/// randomly oriented particles with a plane of symmetry
+/// ([Hovenier et al. 2004](https://ui.adsabs.harvard.edu/abs/2004ASSL..318.....H/abstract)).
+///
+/// Each vector has length `n_angles`, evaluated at uniform angle midpoints
+/// $\theta_{j} = (j + 1/2)\thinspace 180^{\circ} / N_{\theta}$ and normalized
+/// so that
+/// $$\frac{1}{2} \int_{0}^{\pi} F_{11}(\theta) \sin\theta \thinspace \mathrm{d}\theta = 1.$$
 pub struct Mueller {
+    /// Phase function $F_{11}(\theta)$.
     pub f11: RVector,
+    /// Linear-polarization element $F_{12}(\theta)$.
     pub f12: RVector,
+    /// Depolarization diagonal element $F_{22}(\theta)$.
     pub f22: RVector,
+    /// Diagonal polarization element $F_{33}(\theta)$.
     pub f33: RVector,
+    /// Circular-polarization element $F_{34}(\theta)$ (Hovenier et al. 2004
+    /// sign convention).
     pub f34: RVector,
+    /// Circular-polarization diagonal element $F_{44}(\theta)$.
     pub f44: RVector,
 }
 
-/// Computed opacities, asymmetry factor, and Mueller matrices for a dust population.
+/// Computed mass opacities, scattering asymmetry parameter, and Mueller
+/// matrices across all wavelengths for a dust grain population.
 #[derive(Default)]
 pub struct Particle {
+    /// Geometric-mean grain radius $\sqrt{a_{\min} a_{\max}}$ ($\mu\mathrm{m}$).
     pub radius_mean: f64,
+    /// Minimum grain radius $a_{\min}$ ($\mu\mathrm{m}$).
     pub radius_min: f64,
+    /// Maximum grain radius $a_{\max}$ ($\mu\mathrm{m}$).
     pub radius_max: f64,
+    /// Average grain mass density $\rho$ ($\mathrm{g\thinspace cm^{-3}}$).
     pub rho: f64,
+    /// Absorption mass opacity $\kappa_{\mathrm{abs}}(\lambda)$
+    /// ($\mathrm{cm^{2}\thinspace g^{-1}}$).
     pub k_abs: RVector,
-    pub k_sca: RVector,
+    /// Extinction mass opacity $\kappa_{\mathrm{ext}}(\lambda)$
+    /// ($\mathrm{cm^{2}\thinspace g^{-1}}$).
     pub k_ext: RVector,
+    /// Scattering mass opacity $\kappa_{\mathrm{sca}}(\lambda)$
+    /// ($\mathrm{cm^{2}\thinspace g^{-1}}$).
+    pub k_sca: RVector,
+    /// Scattering asymmetry parameter $g(\lambda) = \langle \cos\theta \rangle$.
     pub g: RVector,
+    /// Per-wavelength normalized [`Mueller`] scattering matrices (same length
+    /// as the wavelength grid).
     pub mueller: Vec<Mueller>,
+    /// Per-wavelength flag indicating whether the scattering matrix and $g$
+    /// satisfy the solver validity criterion (always `true` outside MMF
+    /// phase-shift $\Delta\phi > 1$).
     pub trust: BVector,
+    /// `true` if every wavelength has `trust[ilam] == true`.
     pub is_ok: bool,
+    /// Longest wavelength ($\mu\mathrm{m}$) at which `trust[ilam]` is `false`
+    /// ($0$ when `is_ok` is `true`).
     pub untrusted_lmax: f64,
 }
 
+/// Per-wavelength intermediate result returned by
+/// [`PreparedModel::over_wavelengths`].
 struct KappaResult {
+    /// Normalized Mueller matrix at this wavelength.
     mueller: Mueller,
+    /// Integrated grain mass ($\mathrm{g}\thinspace \mu\mathrm{m}^{3}\thinspace \mathrm{cm}^{-3}$).
     mass: f64,
+    /// Integrated grain volume ($\mu\mathrm{m}^{3}$).
     vol: f64,
+    /// Extinction mass opacity $\kappa_{\mathrm{ext}}$ ($\mathrm{cm^{2}\thinspace g^{-1}}$).
     k_ext: f64,
+    /// Scattering mass opacity $\kappa_{\mathrm{sca}}$ ($\mathrm{cm^{2}\thinspace g^{-1}}$).
     k_sca: f64,
+    /// Absorption mass opacity $\kappa_{\mathrm{abs}}$ ($\mathrm{cm^{2}\thinspace g^{-1}}$).
     k_abs: f64,
+    /// Asymmetry parameter $g = \langle \cos\theta \rangle$.
     g: f64,
+    /// Whether the scattering matrix at this wavelength is trusted.
     trust: bool,
 }
 
-/// Runtime-loaded material optical constants from a `.lnk` file.
+/// Runtime-loaded material optical constants from a `.lnk` file or a converted
+/// [`StaticComponent`].
 #[derive(Debug)]
 pub struct Component {
-    /// Name of the component.
+    /// Human-readable material name.
     pub name: String,
-    /// Class of the component.
+    /// Material class (for example, `"Silicate"` or `"Ice"`).
     pub class: String,
-    /// State of the component.
+    /// Structural state (for example, `"Amorphous"` or `"Crystalline"`).
     pub state: String,
-    /// Density of the component in $\mathrm{g\,cm^{-3}}$.
+    /// Bulk material mass density $\rho$ in $\mathrm{g\thinspace cm^{-3}}$.
     pub rho: f64,
-    /// Number of wavelength points.
+    /// Number of tabulated wavelength points.
     pub size: usize,
-    /// Wavelengths in $\mu\mathrm{m}$.
+    /// Tabulated wavelengths $\lambda$ in $\mu\mathrm{m}$ (ascending order).
     pub wavelengths: RVector,
-    /// Real part of the refractive index.
+    /// Real part of the refractive index $n(\lambda)$.
     pub n: RVector,
-    /// Imaginary part of the refractive index.
+    /// Imaginary part of the refractive index $k(\lambda)$.
     pub k: RVector,
 }
 
@@ -2334,6 +2648,20 @@ impl From<&StaticComponent> for Component {
     }
 }
 
+/// Computes the effective complex refractive index $m_{\mathrm{eff}}$ of a
+/// multi-component mixture (plus optional vacuum porosity
+/// $f_{\mathrm{vac}} = 1 - \sum_{j} f_{j}$) via the
+/// [Bruggeman (1935)](https://ui.adsabs.harvard.edu/abs/1935AnP...416..636B/abstract)
+/// effective medium equation:
+/// $$\sum_{j} f_{j} \frac{m_{j}^{2} - m_{\mathrm{eff}}^{2}}{m_{j}^{2} + 2 m_{\mathrm{eff}}^{2}} = 0.$$
+///
+/// Solved by $100$ fixed-point iterations starting from vacuum ($m = 1 + 0i$).
+/// Returns `(m_eff, converged)` where `converged` checks whether the residual
+/// satisfies $|\mathrm{tot}| / |m_{\mathrm{eff}}| \le 10^{-6}$.
+///
+/// # Errors
+/// Returns [`KappaError::Numerical`] if the input volume fractions sum to more
+/// than $1 + 10^{-5}$.
 fn bruggeman_blend(abun: &[f64], e_in: &[Complex64]) -> Result<(Complex64, bool), KappaError> {
     let mut abunvac = 1.0 - abun.iter().sum::<f64>();
     let mvac = Complex::new(1.0, 0.0);
@@ -2367,6 +2695,13 @@ fn bruggeman_blend(abun: &[f64], e_in: &[Complex64]) -> Result<(Complex64, bool)
     Ok((me, converged))
 }
 
+/// Coats a core of refractive index `m1` with a mantle of refractive index `m2`
+/// and mantle volume fraction `vf_m` ($f_{c} = 1 - f_{m}$) using the
+/// [Maxwell Garnett (1904)](https://ui.adsabs.harvard.edu/abs/1904RSPTA.203..385G/abstract)
+/// effective medium rule:
+/// $$m_{\mathrm{eff}}^{2} = m_{2}^{2} \frac{2 m_{2}^{2} + m_{1}^{2} - 2 f_{c} (m_{2}^{2} - m_{1}^{2})}{2 m_{2}^{2} + m_{1}^{2} + f_{c} (m_{2}^{2} - m_{1}^{2})}.$$
+///
+/// Returns `(m_eff.re, m_eff.im)`.
 fn maxwell_garnet_blend(m1: Complex64, m2: Complex64, vf_m: f64) -> (f64, f64) {
     let vf_c = 1.0 - vf_m;
     let me = m2.powi(2)
