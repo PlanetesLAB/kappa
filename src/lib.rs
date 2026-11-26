@@ -10,206 +10,161 @@
     html_logo_url = "https://raw.githubusercontent.com/PlanetesLAB/documentation/refs/heads/main/logo.jpg"
 )]
 
-//! # Introduction
-//! This tool produces complex dust particle opacities right from the command line. It is
-//! derived from Michiel Min’s DHS OpacityTool and also implements Ryo Tazaki’s MMF
-//! theory for highly porous aggregates.
+//! Dust opacity and Mueller scattering matrix calculator for astrophysics.
 //!
-//! For a brief overview behind the details of the implementation from a theoretical
-//! perspective, read the [book](https://planeteslab.github.io/tools/software/kappa/).
+//! `kappa` computes absorption, scattering, and extinction mass opacities
+//! ($\kappa_{\mathrm{abs}}$, $\kappa_{\mathrm{sca}}$, $\kappa_{\mathrm{ext}}$),
+//! the scattering asymmetry parameter $g = \langle \cos\theta \rangle$, and the
+//! six independent elements of the Mueller scattering matrix
+//! ($F_{11}, F_{12}, F_{22}, F_{33}, F_{34}, F_{44}$) for complex dust grain
+//! populations. It ships as both a Rust library and a standalone command-line
+//! executable (feature-gated under `cli`).
 //!
-//! ## Capabilities
-//! - stand-alone tool, fully command line driven, no input files need to be edited
-//! - full scattering matrix output in several formats, including for RADMC-3D
-//! - combining materials through mixing into a complex grain with porosity
-//! - built-in: a curated collection of materials for applications in astronomy
-//! - external refractive index data can be used just as easily
-//! - computational methods: (i) DHS (Distribution of Hollow Spheres) for irregular
-//!   grains and low-porosity aggregates. Standard Mie theory for perfect spheres
-//!   is available as a limiting case. (ii) MMF (Modified Mean Field) theory for
-//!   high-porosity/fractal aggregates. (iii) CDE approximation in the Rayleigh limit.
-//! - Python interface module for plotting and post-processing
+//! For theoretical background, see the
+//! [PlanetesLAB documentation](https://planeteslab.github.io/tools/software/kappa/).
 //!
-//! ## Physical units used by `kappa`
-//! Due to conventions in our field, the input and output of `kappa` uses the following units
+//! # Scattering Theories
 //!
-//! - grain sizes and wavelengths are in microns
-//! - mass densities of materials are in g/cm^3
-//! - opacities are in cm^2/g
-//! - scattering matrices are in sr^-1 or cm^-1 g^-1 sr^-1
+//! - **Distribution of Hollow Spheres (DHS):** Models irregular grains and
+//!   low-porosity aggregates by averaging concentric hollow spheres over inner
+//!   cavity volume fractions $f \in [0, f_{\max}]$
+//!   ([Min et al. 2005](https://ui.adsabs.harvard.edu/abs/2005A%26A...432..909M/abstract)),
+//!   using the stratified-sphere algorithm of
+//!   [Toon & Ackerman (1981)](https://ui.adsabs.harvard.edu/abs/1981ApOpt..20.3657T/abstract).
+//! - **Lorenz-Mie theory:** Exact scattering by compact homogeneous spheres
+//!   ([De Rooij & Van der Stap 1984](https://ui.adsabs.harvard.edu/abs/1984A%26A...131..237D/abstract)).
+//! - **Modified Mean Field theory (MMF):** Light scattering by porous fractal
+//!   aggregates of spherical monomers
+//!   ([Tazaki & Tanaka 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract)),
+//!   with analytical and numerical geometric cross sections from
+//!   [Tazaki (2021)](https://ui.adsabs.harvard.edu/abs/2021MNRAS.504.2811T/abstract).
+//! - **Continuous Distribution of Ellipsoids (CDE):** Analytical Rayleigh-limit
+//!   shape distribution (Bohren & Huffman 1983, Ch. 12) paired with the exact
+//!   Rayleigh phase matrix.
 //!
-//! # Examples
-//! A simple grain made only of the default pyroxene, for the default grain size distribution
-//! ($a^{-3.5}$ powerlaw from 0.05 to 3000μm), on the default wavelength grid (0.05μm to 1cm).
+//! Multi-component core and mantle mixtures are blended with the Bruggeman
+//! effective medium rule (including optional vacuum porosity), and mantles are
+//! coated onto cores via the Maxwell Garnett rule. Built-in presets are provided
+//! for the DIANA standard opacity model
+//! ([Woitke et al. 2016](https://ui.adsabs.harvard.edu/abs/2016A%26A...586A.103W/abstract))
+//! and the DSHARP opacity model
+//! ([Birnstiel et al. 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...869L..45B/abstract)).
 //!
-//! # Installation
-//! The easiest way to install `kappa` is to first get the source code from GitHub:
-//! ```bash
-//! git clone https://github.com/PlanetesLAB/kappa.git
+//! # Physical Units and Conventions
+//!
+//! - Grain radii $a$ and wavelengths $\lambda$: $\mu\mathrm{m}$
+//! - Material mass densities $\rho$: $\mathrm{g\thinspace cm^{-3}}$
+//! - Mass opacities $\kappa_{\mathrm{abs}}, \kappa_{\mathrm{sca}}, \kappa_{\mathrm{ext}}$:
+//!   $\mathrm{cm^{2}\thinspace g^{-1}}$
+//! - Standard scattering matrix elements $F_{ij}(\theta)$: dimensionless
+//!   Hovenier et al. (2004) convention normalized so that
+//!   $$\frac{1}{2} \int_{0}^{\pi} F_{11}(\theta) \sin\theta \thinspace \mathrm{d}\theta = 1$$
+//!   with consistent sign convention for $F_{34}$ across Mie, DHS, MMF, and CDE.
+//! - RADMC-3D output (`for_radmc = true`): $Z_{ij}(\theta)$ in
+//!   $\mathrm{cm^{2}\thinspace g^{-1}\thinspace sr^{-1}}$ normalized so that
+//!   $2\pi \int_{0}^{\pi} Z_{11}(\theta)\sin\theta\thinspace\mathrm{d}\theta = \kappa_{\mathrm{sca}}$.
+//!
+//! # Library Quickstart
+//!
+//! ```no_run
+//! use kappa::opac::{KappaConfig, ScatteringMethod, SizeDistribution, WavelengthGrid};
+//!
+//! let mut config = KappaConfig::diana();
+//! config.size_distribution = SizeDistribution::PowerLaw {
+//!     min: 0.05,
+//!     max: 1000.0,
+//!     slope: 3.5,
+//!     bins: Some(50),
+//! };
+//! config.wavelengths = WavelengthGrid::LogSpaced {
+//!     min: 0.1,
+//!     max: 1e4,
+//!     count: 100,
+//! };
+//! config.method = ScatteringMethod::dhs(0.8);
+//!
+//! let particle = config.compute()?;
+//! println!("k_abs(0) = {:.3e} cm^2/g", particle.k_abs[0]);
+//! # Ok::<(), kappa::opac::KappaError>(())
 //! ```
-//! Then, you can build the executable with `cargo`:
-//! ```bash
-//! cd kappa
+//!
+//! # Command-Line Interface
+//!
+//! Build the executable with default features (`cli` enabled):
+//!
+//! ```text
 //! cargo build --release
-//! ```
-//! This will create a binary called `kappa` in the `target/release` directory.
-//!
-//! # Usage
-//! The command line interface is documented in the help message:
-//! ```bash
 //! kappa --help
+//! kappa materials
+//! kappa --preset dsharp --method mie --lam 1300 --scatter --radmc -o out
+//! kappa -c pyr=0.87 -c c-z=0.13 -m h2o-w=0.2 -p 0.25 --method dhs --fmax 0.8
 //! ```
 //!
-//! ## Grain composition
-//! If no composition is specified, the DIANA composition is used by default.
+//! # Crate Features
 //!
-//! ### Core material
-//! Specify a material to include in the grain. MATERIAL can be the key for a builtin
-//! material, the path to an lnk file, or colon-separated numbers n:k:rho3. MFRAC is
-//! the mass fraction (default 1.0) of the material. You can give up to 20 materials
-//! to build up the grain. Mass fractions do not have to add up to one, they will be
-//! renormalized. All materials will be mixed together using the Bruggeman rule, and
-//! vacuum can be added through the porosity. -c in front of each material is optional.
+//! - `cli` (enabled by default): builds the `kappa` binary and exposes [`cli`],
+//!   pulling in `clap` and `colored`. Library consumers can set
+//!   `default-features = false` in `Cargo.toml` to omit CLI dependencies.
+//! - `serde`: enables `Serialize` and `Deserialize` derives on configuration
+//!   types in [`opac`].
 //!
-//! ### Mantle material
-//! Like -c, but place this material into the grain mantle. Multiple mantle materials
-//! will be mixed using the Bruggeman rule, and then that mix will be added to the
-//! core using the Maxwell-Garnett rule. The -m is not optional, it must be present.
+//! # Module Overview
 //!
-//! ### Porosity
-//! Porosity, the volume fraction of vacuum, a number smaller than 1. The default is
-//! 0. A single value will apply to both core and mantle, but a second value will be
-//! specific for the mantle (and may be 0).
+//! - [`opac`]: High-level configuration ([`opac::KappaConfig`]), validation and
+//!   mixing ([`opac::PreparedModel`]), opacity evaluation ([`opac::Particle`]),
+//!   and ASCII/RADMC-3D writers.
+//! - [`mie`]: Lorenz-Mie solver ([`mie::de_rooij_1984`]).
+//! - [`dhs`]: Concentric core-shell sphere solver ([`dhs::toon_ackerman_1981`]).
+//! - [`fractal`]: RGD, Mean Field, and Modified Mean Field aggregate scattering
+//!   ([`fractal::mean_scattering`]).
+//! - [`geofractal`]: Aggregate geometric cross-section models
+//!   ([`geofractal::get_geometric_cross_section_tazaki`]).
+//! - [`components`]: Built-in optical constant tables and key lookup.
+//! - [`io`]: Readers for `.lnk` optical constants, size distributions, and
+//!   wavelength grids.
+//! - [`utils`]: Special functions (Legendre, spherical Bessel, Gamma, confluent
+//!   hypergeometric), complex LU linear solver, and log-log regridding.
 //!
-//! ## Grain geometry and computational method
-//! If no method is explicitly specified, the default is -dhs 0.8, i.e. DHS with fmax=0.8.
+//! # Built-in Materials
 //!
-//! ### Distribution of Hollow Spheres
-//! Use the Distribution of Hollow Spheres (DHS, Min+ 2005) approach to model deviations from
-//! perfect spherical symmetry and low-porosity aggregates. Spheres with
-//! inner holes with volume fractions between 0 and fmax (default 0.8) are averaged to
-//! mimic irregularities. fmax=0 means to use solid spheres (Mie theory), i.e. perfectly
-//! regular grains. For backward compatibility, -fmax can be used instead of -dhs
+//! Built-in optical constants are accessed by key via [`opac::MaterialSource::Builtin`]
+//! or [`components::try_get_lnk_data`]. Wavelengths outside the tabulated range
+//! are extrapolated automatically.
 //!
-//! ### Modified Mean Field theory
-//! Use Modified Mean Field theory (MMF, Tazaki & Tanaka 2018) to compute opacities of
-//! highly porous or fractal aggregates. -c, -m, and -p determine the composition of
-//! monomers with radius A0 (default 0.1μm). Particles will be aggregates
-//! with a compact size given by the -a switch, giving rise to N = a3/a30 monomers.
-//! DFRAC-OR-FILL specifies either the fractal dimension (if >1) or the volume filling
-//! factor (if <1). The default is 0.2. KF may be used to change the default prefactor.
-//!
-//! ### Mie theory
-//! Do a standard Mie calculation for perfect spheres. This is short for -dhs 0
-//!
-//! ### Continuum Distribution of Ellipsoids
-//! Compute CDE (continuous distribution of ellipsoids) Rayleigh limit opacities
-//!
-//! ## Grain size distribution
-//! Grain size distributions can be specified using a powerlaw, a (log-)normal or from
-//! a file.
-//!
-//! ### Powerlaw size distribution
-//! Specify (minimum) grain radius, and optionally maximum grain radius, the size
-//! distribution powerlaw and the number of size bins. You may also use options to
-//! set individual values with -amin, -amax, -apow, -na. The defaults are 0.05 μm,
-//! 3000 μm, 3.5, and 15 per size decade with a fixed minimum of 5, respectively.
-//!
-//! ### (Log-)normal size distribution
-//! Specify the centroid size and the logarithmic width for a log-normal size distribution.
-//! You may also use -amean and -asig options to set these values. If ASIG is
-//! negative, create a normal distribution with that width (in μm) around AMEAN.
-//!
-//! ## Wavelength grid
-//! Specify the (minimum) wavelength, and optionally the maximum wavelength and
-//! the number of wavelengths points for the construction of the wavelength grid. The
-//! default values are 0.05 μm, 10000 μm, and 300, respectively. You may also use the
-//! options -lmin, -lmax, and -nlam (or -nl) to set individual values.
-//! > If only one wavelength is specified with -l, then λmax=λmin and nλ=1 are implied.
-//!
-//! Grid can also be read from a file.
-//!
-//! ## Controlling the output
-//! The standard output is the file dustkappa.dat, with the opacities and the asymmetry
-//! parameter g. The following options control and extend the output.
-//!
-//! -   Put the output files in directory DIR instead of the current working directory.
-//!     ./output will be used if -o is present but DIR is not specified.
-//! -   Include the scattering matrix in the output. NANG may optionally change the
-//!     number of equally-spaced angular grid points to cover the range of angles between
-//!     0 and 180 degrees. The default for NANG is 180 and should normally be just fine.
-//! -   Divide the computation up into na parts to produce a file for each grain size. Each
-//!     size will be an average over a range of NSUB grains around the real size.
-//! -   Cap the first NDEG (2 if unspecified) degrees of the forward scattering peak.
-//! -   Write dustkappa.fits instead of ASCII output. With -d, write na files.
-//! -   RADMC-3D uses a different angular grid and scattering matrix normalization. File
-//!     names will contain LABEL if specified and have the extension .inp.
-//! -   Write to STDOUT instead of files. The default is to write λ, κabs, κsca, κext, and
-//!     g. Many other outputs are possible, run optool -print ? for a full list. For
-//!     readability, a header line may be printed to STDERR, but STDOUT gets only numbers
-//!     which can be used in pipes and for redirection. You can use this to extract a single
-//!     value, for example the 850μm extinction opacity of grains between 1 and 3mm:
-//!     optool -a 1000 3000 -l 850 -print kext
-//! -   Write the files optool_sd.dat and optool_lam.dat with the grain size distribution
-//!     and the wavelength grid, respectively. Also, write optool_mix.lnk with the result
-//!     of mixing refractive index data. Exit without doing a computation.
-//!
-//!
-//! # Material properties
-//! `kappa` needs refractive index data to work.  For your convenience, a
-//! useful list of materials is compiled into `kappa`. You can also find
-//! and use other data.
-//! To access one of the built-in materials, specify the corresponding key
-//! string like `pyr-mg70`. In each material class we have selected a
-//! useful default, accessible with an even simpler generic key (for
-//! example, `pyr` is an alias for `pyr-mg70`). Most of the built-in
-//! refractive index datasets have a reasonably wide wavelength coverage -
-//! the few exceptions are highlighted by bold-face numbers.  If a
-//! material is being used outside of the measured region, `kappa` will
-//! still function, using extrapolated optical properties.
-//!
-//! Even the limited number of materials we have selected to include with
-//! `kappa` can be daunting. To get started with some kind of standard
-//! opacity, we recommend to work with pyroxene `pyr`, carbon
-//! `c`, and, at low temperatures, water ice `h2o` (Woitke+
-//! 2016). If you need to account for sulfur, you may want to include
-//! troilite `tro` (Birnstiel+ 2016).
-//!
-//!
-//! | **Key**                   | **Material**                       | **State**                 |     $\rho \mathrm{(g/cm^3)}$             | $\lambda_{min}$ ($\mu{}m$) | $\lambda_{max}$ ($\mu{}m$) | **Reference**   
-//! |---------------------------|------------------------------------|---------------------------|------------------------------------------|----------------------------|----------------------------|-------------------
-//! | `pyr-mg100`               | $\mathrm{MgSiO_3}$                 | Amorphous                 |      2.71                                |         0.2                |         500                | [Dorschner+95](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D)
-//! | `pyr-mg95`                | $\mathrm{Mg_{0.95}Fe_{0.05}SiO_3}$ | Amorphous                 |      2.74                                |         0.2                |         500                | [Dorschner+95](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D)  
-//! | `pyr-mg80`                | $\mathrm{Mg_{0.8}Fe_{0.2}SiO_3}$   | Amorphous                 |       2.9                                |         0.2                |         500                | [Dorschner+95](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D)  
-//! | `pyr-mg70` (`pyr`)        | $\mathrm{Mg_{0.7}Fe_{0.3}SiO_3}$   | Amorphous                 |      3.01                                |         0.2                |         500                | [Dorschner+95](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D)  
-//! | `pyr-mg60`                | $\mathrm{Mg_{0.6}Fe_{0.4}SiO_3}$   | Amorphous                 |       3.1                                |         0.2                |         500                | [Dorschner+95](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D)  
-//! | `pyr-mg50`                | $\mathrm{Mg_{0.5}Fe_{0.5}SiO_3}$   | Amorphous                 |       3.2                                |         0.2                |         500                | [Dorschner+95](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D)  
-//! | `pyr-mg40`                | $\mathrm{Mg_{0.4}Fe_{0.6}SiO_3}$   | Amorphous                 |       3.3                                |         0.2                |         500                | [Dorschner+95](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D)  
-//! | `pyr-c-mg96` (`ens`)      | $\mathrm{Mg_{0.96}Fe_{0.04}SiO3}$  | Crystalline               |       2.8                                |       2.0                  |        99                  | [Jäger+98](https://ui.adsabs.harvard.edu/abs/1998A%26A...339..904J)     
-//! | `ol-mg50` (`ol`)          | $\mathrm{MgFeSiO_4}$               | Amorphous                 |      3.71                                |         0.2                |         500                | [Dorschner+95](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D)  
-//! | `ol-mg40`                 | $\mathrm{Mg_{0.8}Fe_{1.2}SiO_4}$   | Amorphous                 |      3.71                                |         0.2                |         500                | [Dorschner+95](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D)  
-//! | `ol-c-mg100` (`for`)      | $\mathrm{Mg_{2}SiO_4}$             | Crystalline               |      3.27                                |       5.0                  |         200                | [Suto+06](https://ui.adsabs.harvard.edu/abs/2006MNRAS.370.1599S)      
-//! | `ol-c-mg95`               | $\mathrm{Mg_{1.9}Fe_{0.1}SiO_4}$   | Crystalline               |      3.33                                |       2.0                  |        8190                | [Fabian+01](https://ui.adsabs.harvard.edu/abs/2001A%26A...378..228F)     
-//! | `ol-c-mg00` (`fay`)       | $\mathrm{Fe_{2}SiO_4}$             | Crystalline               |      4.39                                |       3.0                  |         250                | [Fabian+01](https://ui.adsabs.harvard.edu/abs/2001A%26A...378..228F)     
-//! | [`astrosil`](ASTROSIL)    | $\mathrm{MgFeSiO_4}$               | Mixed                     |       3.3                                |        $6\times 10^-5$     |         $1 \times 10^5$    | [Draine+03](https://ui.adsabs.harvard.edu/abs/2003ApJ...598.1017D)
-//! | `c-z` (`c`)               | $\mathrm{C}$                       | Amorphous?                |       1.8                                |        0.05                |         $1 \times 10^4$    | [Zubko+96](https://ui.adsabs.harvard.edu/abs/1996MNRAS.282.1321Z)      
-//! | `c-p`                     | $\mathrm{C}$                       | Amorphous                 |       1.8                                |        0.11                |         800                | [Preibisch+93](https://ui.adsabs.harvard.edu/abs/1993A%26A...279..577P)
-//! | `c-gra` (`gra`)           | $\mathrm{C}$ graphite              | Crystalline               |     2.16?                                |       0.001                |        1000                | [Draine+03](https://ui.adsabs.harvard.edu/abs/2003ApJ...598.1026D)     
-//! | `c-org` (`org`)           | $\mathrm{CHON}$ organics           | Amorphous                 |       1.4                                |         0.1                |         $1 \times 10^5$    | [Henning+96](https://ui.adsabs.harvard.edu/abs/1996A%26A...311..291H)    
-//! | `fe-c` (`iron`)           | $\mathrm{Fe}$                      | Metal                     |      7.87                                |         0.1                |         $1 \times 10^5$    | [Henning+96](https://ui.adsabs.harvard.edu/abs/1996A%26A...311..291H)     
-//! | [`c_nano`](C_NANO)        | $\mathrm{C}$ nano-diamond          | Crystalline               |       2.3                                |        0.02                |       110                  | [Mutschke+04](https://ui.adsabs.harvard.edu/abs/2004A%26A...423..983M)   
-//! | `fes` (`tro`)             | $\mathrm{FeS}$                     | Metal                     |      4.83                                |         0.1                |         $1 \times 10^5$    | [Henning+96](https://ui.adsabs.harvard.edu/abs/1996A%26A...311..291H)     
-//! | `sic`                     | $\mathrm{SiC}$                     | Crystalline               |      3.22                                |       0.001                |        1000                | [Laor93](https://ui.adsabs.harvard.edu/abs/1993ApJ...402..441L)         
-//! | `sio2` (`qua`)            | $\mathrm{SiO_2}$                   | Amorphous                 |      2.65                                |      0.0006                |         500                | [Kitamura+07](https://ui.adsabs.harvard.edu/abs/2007ApOpt..46.8118K)    
-//! | `cor-c` (`cor`)           | $\mathrm{Al_{2}O_3}$               | Crystalline               |       4.0                                |         0.5                |        40                  | [Koike+95](https://ui.adsabs.harvard.edu/abs/1995Icar..114..203K)       
-//! | `h2o-w` (`h2o`)           | Water ice                          | Crystalline               |      0.92                                |        0.04                |         $2 \times 10^6$    | [Warren+08](https://ui.adsabs.harvard.edu/abs/2008JGRD..11314220W)      
-//! | `h2o-a`                   | Water ice                          | Amorphous                 |      0.92                                |        0.04                |         $2 \times 10^6$    | [Hudgins+93](https://ui.adsabs.harvard.edu/abs/1993ApJS...86..713H)     
-//! | `co2-w` (`co2`)           | $\mathrm{CO_2}$ ice                | Crystalline               |       1.6                                |        0.05                |         $2 \times 10^5$    | [Warren+86](https://ui.adsabs.harvard.edu/abs/1986ApOpt..25.2650W)      
-//! | `nh3-m` (`nh3`)           | $\mathrm{NH_3}$ ice                | Crystalline               |      0.75                                |        0.14                |         $2 \times 10^0$    | [Martonchik+83](https://ui.adsabs.harvard.edu/abs/1984ApOpt..23..541M)  
-//! | `co-a` (`co`)             | $\mathrm{CO}$ ice                  | Amorphous                 |      0.81                                |       3.8                  |       5.8                  | [Palumbo+06](https://ui.adsabs.harvard.edu/abs/2006PCCP....8..279P)     
-//! | `co2-a` / `c`             | $\mathrm{CO_2}$ ice                | Amorphous / Crystalline   |       1.2                                |       2.5                  |        20                  | [Gerakines+20](https://ui.adsabs.harvard.edu/abs/2020ApJ...901...52G)
-//! | `ch4-a` / `c`             | $\mathrm{CH_4}$ ice                | Amorphous / Crystalline   |      0.47                                |       2.0                  |        20                  | [Gerakines+20](https://ui.adsabs.harvard.edu/abs/2020ApJ...901...52G)
-//! | `ch3oh-a` / `c`           | $\mathrm{CH_{3}OH}$ ice            | Amorphous / Crystalline   | 0.78/1.02                                |       2.0                  |        24                  | [Gerakines+20](https://ui.adsabs.harvard.edu/abs/2020ApJ...901...52G)
+//! | Key (alias) | Composition | State | $\rho\ [\mathrm{g\thinspace cm^{-3}}]$ | $\lambda_{\min}\ [\mu\mathrm{m}]$ | $\lambda_{\max}\ [\mu\mathrm{m}]$ | Reference |
+//! | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
+//! | `pyr-mg100` | $\mathrm{MgSiO_{3}}$ | Amorphous | $2.71$ | $0.2$ | $500$ | [Dorschner et al. (1995)](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D/abstract) |
+//! | `pyr-mg95` | $\mathrm{Mg_{0.95}Fe_{0.05}SiO_{3}}$ | Amorphous | $2.74$ | $0.2$ | $500$ | [Dorschner et al. (1995)](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D/abstract) |
+//! | `pyr-mg80` | $\mathrm{Mg_{0.8}Fe_{0.2}SiO_{3}}$ | Amorphous | $2.90$ | $0.2$ | $500$ | [Dorschner et al. (1995)](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D/abstract) |
+//! | `pyr-mg70` (`pyr`) | $\mathrm{Mg_{0.7}Fe_{0.3}SiO_{3}}$ | Amorphous | $3.01$ | $0.2$ | $500$ | [Dorschner et al. (1995)](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D/abstract) |
+//! | `pyr-mg60` | $\mathrm{Mg_{0.6}Fe_{0.4}SiO_{3}}$ | Amorphous | $3.10$ | $0.2$ | $500$ | [Dorschner et al. (1995)](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D/abstract) |
+//! | `pyr-mg50` | $\mathrm{Mg_{0.5}Fe_{0.5}SiO_{3}}$ | Amorphous | $3.20$ | $0.2$ | $500$ | [Dorschner et al. (1995)](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D/abstract) |
+//! | `pyr-mg40` | $\mathrm{Mg_{0.4}Fe_{0.6}SiO_{3}}$ | Amorphous | $3.30$ | $0.2$ | $500$ | [Dorschner et al. (1995)](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D/abstract) |
+//! | `pyr-c-mg96` (`ens`) | $\mathrm{Mg_{0.96}Fe_{0.04}SiO_{3}}$ | Crystalline | $2.80$ | $2.0$ | $98.9$ | [Jaeger et al. (1998)](https://ui.adsabs.harvard.edu/abs/1998A%26A...339..904J/abstract) |
+//! | `ol-mg50` (`ol`) | $\mathrm{MgFeSiO_{4}}$ | Amorphous | $3.71$ | $0.2$ | $500$ | [Dorschner et al. (1995)](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D/abstract) |
+//! | `ol-mg40` | $\mathrm{Mg_{0.8}Fe_{1.2}SiO_{4}}$ | Amorphous | $3.71$ | $0.2$ | $500$ | [Dorschner et al. (1995)](https://ui.adsabs.harvard.edu/abs/1995A%26A...300..503D/abstract) |
+//! | `ol-c-mg100` (`for`) | $\mathrm{Mg_{2}SiO_{4}}$ | Crystalline | $3.27$ | $5.0$ | $200$ | [Suto et al. (2006)](https://ui.adsabs.harvard.edu/abs/2006MNRAS.370.1599S/abstract) |
+//! | `ol-c-mg95` | $\mathrm{Mg_{1.9}Fe_{0.1}SiO_{4}}$ | Crystalline | $3.33$ | $2.0$ | $8190$ | [Fabian et al. (2001)](https://ui.adsabs.harvard.edu/abs/2001A%26A...378..228F/abstract) |
+//! | `ol-c-mg00` (`fay`) | $\mathrm{Fe_{2}SiO_{4}}$ | Crystalline | $4.39$ | $2.0$ | $10^{4}$ | [Fabian et al. (2001)](https://ui.adsabs.harvard.edu/abs/2001A%26A...378..228F/abstract) |
+//! | `astrosil` | $\mathrm{MgFeSiO_{4}}$ | Amorphous | $3.30$ | $6.2 \times 10^{-5}$ | $1.24 \times 10^{5}$ | [Draine (2003)](https://ui.adsabs.harvard.edu/abs/2003ApJ...598.1017D/abstract) |
+//! | `c-z` (`c`) | $\mathrm{C}$ | Amorphous | $1.80$ | $0.05$ | $10^{4}$ | [Zubko et al. (1996)](https://ui.adsabs.harvard.edu/abs/1996MNRAS.282.1321Z/abstract) |
+//! | `c-p` | $\mathrm{C}$ | Amorphous | $1.80$ | $0.105$ | $800$ | [Preibisch et al. (1993)](https://ui.adsabs.harvard.edu/abs/1993A%26A...279..577P/abstract) |
+//! | `c-gra` (`gra`) | $\mathrm{C}$ graphite | Crystalline | $2.16$ | $10^{-3}$ | $10^{3}$ | [Draine (2003)](https://ui.adsabs.harvard.edu/abs/2003ApJ...598.1026D/abstract) |
+//! | `c-org` (`org`) | $\mathrm{CHON}$ organics | Amorphous | $1.50$ | $0.1$ | $10^{5}$ | [Henning & Stognienko (1996)](https://ui.adsabs.harvard.edu/abs/1996A%26A...311..291H/abstract) |
+//! | `c-nano` (`nano`) | $\mathrm{C}$ nano-diamond | Crystalline | $2.30$ | $0.0202$ | $110$ | [Mutschke et al. (2004)](https://ui.adsabs.harvard.edu/abs/2004A%26A...423..983M/abstract) |
+//! | `fe-c` (`iron`) | $\mathrm{Fe}$ | Metallic | $7.87$ | $0.1$ | $10^{5}$ | [Henning & Stognienko (1996)](https://ui.adsabs.harvard.edu/abs/1996A%26A...311..291H/abstract) |
+//! | `fes` (`tro`) | $\mathrm{FeS}$ | Crystalline | $4.83$ | $0.1$ | $10^{5}$ | [Henning & Stognienko (1996)](https://ui.adsabs.harvard.edu/abs/1996A%26A...311..291H/abstract) |
+//! | `sic` | $\mathrm{SiC}$ | Crystalline | $3.22$ | $10^{-3}$ | $10^{3}$ | [Laor & Draine (1993)](https://ui.adsabs.harvard.edu/abs/1993ApJ...402..441L/abstract) |
+//! | `sio2` (`qua`) | $\mathrm{SiO_{2}}$ | Amorphous | $2.65$ | $6.2 \times 10^{-4}$ | $502$ | [Kitamura et al. (2007)](https://ui.adsabs.harvard.edu/abs/2007ApOpt..46.8118K/abstract) |
+//! | `cor-c` (`cor`) | $\mathrm{Al_{2}O_{3}}$ | Crystalline | $4.00$ | $0.5$ | $400$ | [Koike et al. (1995)](https://ui.adsabs.harvard.edu/abs/1995Icar..114..203K/abstract) |
+//! | `h2o-w` (`h2o`, `ice-w`) | $\mathrm{H_{2}O}$ ice | Crystalline | $0.92$ | $0.0443$ | $2 \times 10^{6}$ | [Warren & Brandt (2008)](https://ui.adsabs.harvard.edu/abs/2008JGRD..11314220W/abstract) |
+//! | `h2o-a` | $\mathrm{H_{2}O}$ ice | Amorphous | $0.92$ | $0.0443$ | $2 \times 10^{6}$ | [Hudgins et al. (1993)](https://ui.adsabs.harvard.edu/abs/1993ApJS...86..713H/abstract) |
+//! | `co2-w` (`co2`) | $\mathrm{CO_{2}}$ ice | Crystalline | $1.60$ | $0.052$ | $2 \times 10^{5}$ | [Warren (1986)](https://ui.adsabs.harvard.edu/abs/1986ApOpt..25.2650W/abstract) |
+//! | `nh3-m` (`nh3`) | $\mathrm{NH_{3}}$ ice | Crystalline | $0.75$ | $0.14$ | $200$ | [Martonchik et al. (1984)](https://ui.adsabs.harvard.edu/abs/1984ApOpt..23..541M/abstract) |
+//! | `co-a` (`co`) | $\mathrm{CO}$ ice | Amorphous | $0.81$ | $3.85$ | $6.0$ | [Palumbo et al. (2006)](https://ui.adsabs.harvard.edu/abs/2006PCCP....8..279P/abstract) |
+//! | `co2-a` / `co2-c` | $\mathrm{CO_{2}}$ ice | Amorphous / Crystalline | $1.20 / 1.67$ | $2.5$ | $19.9$ | [Gerakines & Hudson (2020)](https://ui.adsabs.harvard.edu/abs/2020ApJ...901...52G/abstract) |
+//! | `ch4-a` (`ch4`) / `ch4-c` | $\mathrm{CH_{4}}$ ice | Amorphous / Crystalline | $0.47$ | $2.0$ | $20.0$ | [Gerakines & Hudson (2020)](https://ui.adsabs.harvard.edu/abs/2020ApJ...901...52G/abstract) |
+//! | `ch3oh-a` (`ch3oh`) / `ch3oh-c` | $\mathrm{CH_{3}OH}$ ice | Amorphous / Crystalline | $0.78 / 1.02$ | $2.0$ | $24.0$ | [Gerakines & Hudson (2020)](https://ui.adsabs.harvard.edu/abs/2020ApJ...901...52G/abstract) |
 
 #[cfg(feature = "cli")]
 pub mod cli;
