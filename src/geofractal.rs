@@ -1,3 +1,14 @@
+//! Geometric cross-section models for randomly oriented fractal dust
+//! aggregates.
+//!
+//! Implements the statistical monomer-overlap cross-section model of
+//! [Tazaki (2021)](https://ui.adsabs.harvard.edu/abs/2021MNRAS.504.2811T/abstract)
+//! together with the small-$N$ empirical fit of
+//! [Minato et al. (2006)](https://ui.adsabs.harvard.edu/abs/2006A%26A...452..701M/abstract).
+//! The entry point [`get_geometric_cross_section_tazaki`] returns the
+//! dimensionless normalized cross section $G / (N \pi R_{0}^{2}) \in (0, 1]$,
+//! where $N$ is the number of monomers and $R_{0}$ is the monomer radius.
+
 use std::f64::consts::PI;
 
 use anyhow::Result;
@@ -7,49 +18,58 @@ use planetes_ext::types::RVector;
 use crate::fractal::FractalCutoff;
 use crate::utils::gamma::{gamma, gamma_ur};
 
-/// Method for solving radial and angular integration
-/// when computing the mean overlapping efficiency.
+/// Quadrature strategy for the radial ($x$) and angular ($u$) integrals in the
+/// mean monomer overlapping efficiency $\sigma$.
 #[derive(PartialEq)]
 pub enum IntegrationMethod {
-    /// Radial (Numerical); Angular (Numerical)
-    ///
-    /// This is the default method.
+    /// Numerical quadrature for both the radial and angular integrals
+    /// (retains the full finite-$\rho$ angular overlap factor $S(\rho)$).
     NumNum,
-    /// Radial (Numerical); Angular (Analytical)
+    /// Numerical radial quadrature combined with the asymptotic analytical
+    /// angular limit $S(\rho) = 1$.
     NumAn,
-    /// Radial (Analytical); Angular (Analytical)
+    /// Analytical upper incomplete gamma evaluation for the radial integral
+    /// when $d_{f} > 2$ (falling back to numerical radial quadrature for
+    /// $d_{f} \le 2$), combined with the analytical angular limit $S(\rho) = 1$.
     AnAn,
 }
 
+/// Normalization factor $A$ in the aggregate geometric cross-section relation
+/// $G / (N \pi R_{0}^{2}) = A / [1 + (N - 1)\sigma]$.
 pub enum AFactor {
+    /// Constant normalization $A = 1$ for all monomer counts $N \ge 1$.
     Unity,
+    /// Two-regime matching from
+    /// [Tazaki (2021)](https://ui.adsabs.harvard.edu/abs/2021MNRAS.504.2811T/abstract):
+    /// uses the [Minato et al. (2006)](https://ui.adsabs.harvard.edu/abs/2006A%26A...452..701M/abstract)
+    /// fitting formula for $N < N_{\mathrm{th}} = \min(11 d_{f} - 8.5, 8)$ and
+    /// chooses $A$ so that the two regimes meet continuously at
+    /// $N = N_{\mathrm{th}}$.
     TwoRegimes,
 }
 
-/// Computing geometrical cross-section of randomly oriented
-/// fractal dust aggregates based on a statistical distribution
-/// model of monomer particles as discussed in [Tazaki (2021)](
-/// https://ui.adsabs.harvard.edu/abs/2021MNRAS.504.2811T/abstract).
+/// Computes the normalized orientation-averaged geometric cross section
+/// $G / (N \pi R_{0}^{2})$ of a randomly oriented fractal dust aggregate
+/// following [Tazaki (2021)](https://ui.adsabs.harvard.edu/abs/2021MNRAS.504.2811T/abstract).
+///
+/// Evaluates
+/// $$\frac{G}{N \pi R_{0}^{2}} = \frac{A}{1 + (N - 1)\sigma},$$
+/// where $\sigma$ is the mean monomer overlapping efficiency and $A$ is set by
+/// `afac` (with small-$N$ switching to the
+/// [Minato et al. 2006](https://ui.adsabs.harvard.edu/abs/2006A%26A...452..701M/abstract)
+/// fit under [`AFactor::TwoRegimes`]).
 ///
 /// # Arguments
-///
-/// * `iqapp` - Select a method for solving radial and angular integration
-///   when computing the mean overlapping efficiency.
-///
-/// ```text
-///         --------------------------------------------------------
-///                   |    radial  (x)        |  angular (u)        |
-///         ---------------------------------------------------------
-///         iqapp = 1 |   numerical           |  numerical          |
-///         iqapp = 2 |   numerical  ( D<=2 ) |  analytical         |
-///                   |   analytical ( D> 2 ) |                     |
-///         --------------------------------------------------------
-/// ```
-///
+/// - `method`: Radial and angular quadrature method ([`IntegrationMethod`]).
+/// - `afac`: Normalization scheme ([`AFactor`]).
+/// - `cutoff`: Two-point correlation cutoff model ([`FractalCutoff`]).
+/// - `n_monomers`: Number of monomers $N \ge 1$.
+/// - `prefactor`: Fractal prefactor $k_{0}$ in $N = k_{0}(R_{g}/R_{0})^{d_{f}}$.
+/// - `fractal_dim`: Fractal dimension $d_{f} \in [1, 3]$.
 ///
 /// # Errors
-/// - `NotEnoughMonomers`: The number of monomers in the aggregate is too small
-/// - `ExceedsMaxFractalDimension`: The fractal dimension exceeds the maximum value (3.0).
+/// Returns an error if `n_monomers <= 0.9999` or if `fractal_dim` lies outside
+/// $[0.9999, 3.0001]$.
 pub fn get_geometric_cross_section_tazaki(
     method: &IntegrationMethod,
     afac: &AFactor,
@@ -83,60 +103,37 @@ pub fn get_geometric_cross_section_tazaki(
     Ok(a / (1.0 + (n_monomers - 1.0) * sigma))
 }
 
-/// Minato et al. (2006) fitting formula for $N < 16$.
+/// Empirical normalized geometric cross section for small aggregates ($N < 16$)
+/// from [Minato et al. (2006)](https://ui.adsabs.harvard.edu/abs/2006A%26A...452..701M/abstract):
+/// $$\frac{G}{N \pi R_{0}^{2}} = 12.5 \thinspace N^{-0.315} \exp\!\left(-2.53 \thinspace N^{-0.0920}\right).$$
 fn minato_fit(n_monomers: f64) -> f64 {
     12.5 * n_monomers.powf(-0.315) * (-2.53 / n_monomers.powf(0.0920)).exp()
 }
 
-/// Compute the mean overlapping efficiency
+/// Computes the mean monomer overlapping efficiency $\sigma$ of
+/// [Tazaki (2021)](https://ui.adsabs.harvard.edu/abs/2021MNRAS.504.2811T/abstract).
 ///
-/// This subroutine calculations the mean overlapping efficiency: sigma
+/// Depending on the two-point correlation cutoff model, $\sigma$ takes the form
+/// $$\sigma = C \int_{\ln x_{\min}}^{\ln x_{\max}} f_{\mathrm{rad}}(x) S(\rho) \thinspace \mathrm{d}\ln x,$$
+/// where $f_{\mathrm{rad}}(x) = x^{a} e^{-x}$ and:
+/// - [`FractalCutoff::Gaussian`]:
+///   $C = x_{\min} / [16\thinspace\Gamma(d_{f}/2)]$,
+///   $x_{\min} = d_{f}(k_{0}/N)^{2/d_{f}}$, $a = (d_{f} - 2)/2$,
+///   $\rho = \sqrt{x / x_{\min}}$.
+/// - [`FractalCutoff::Exponential`]:
+///   $C = x_{\min}^{2} / [16\thinspace\Gamma(d_{f})]$,
+///   $x_{\min} = 2\sqrt{d_{f}(d_{f} + 1)/2}\thinspace (k_{0}/N)^{1/d_{f}}$,
+///   $a = d_{f} - 2$, $\rho = x / x_{\min}$.
+/// - [`FractalCutoff::FractalDimension`]:
+///   $C = x_{\min}^{2/d_{f}} / 16$,
+///   $x_{\min} = 2^{d_{f} - 1} k_{0}/N$, $a = (d_{f} - 2)/d_{f}$,
+///   $\rho = (x / x_{\min})^{1/d_{f}}$.
 ///
-/// For `iqcor = 1` (Gaussian cut-off model)
-///     
-/// ```text
-///                    xmin       /ln(xmax)
-///      sigma  = --------------  |   dlnx frad(x)*S(rho),
-///               16*Gamma(df/2)  /ln(xmin)
-///     
-///            xmin = df*(k0/PN)^(2/df); a=(df-2)/2; rho = sqrt(x/xmin)
-/// ```
-///     
-/// For iqcor=2 [Exponential cut-off model]
-///     
-/// ```text
-///                   xmin^2      /ln(xmax)
-///      sigma  = --------------  |   dlnx frad(x)*S(rho),
-///                16*Gamma(df)   /ln(xmin)
-///     
-///            xmin = 2*sqrt(df(df+1)/2)*(k0/PN)^(1.0/df); a=df-2; rho = x/xmin
-/// ```
-///     
-/// For iqcor=3 [Fractal dimension cut-off model]
-///     
-/// ```text
-///               xmin^{2/df} /ln(xmax)
-///      sigma  = ----------  |  dlnx frad(x)*S(rho),
-///                  16      /ln(xmin)
-///     
-///            xmin = 2^(df-1)*k0/PN; a=(df-2)/df; rho = (x/xmin)^(1/df)
-/// ```
-///     
-/// where df is fractal dimension, R0 is the monomer radius, Rg is
-/// the radius of gyration, frad(x) is the radial integrand function,
-/// and S(rho) is the angular integral function.
-///
-/// frad(x)dlnx = x^{a}*exp(-x) dlnx = x^{a-1}exp(-x) dx
-///     
-/// ```text
-///                16*rho^2  / (1/rho)
-///      S(rho)  = --------  |  du fang(rho,u),
-///                   pi     /0
-///     
-///     fang(rho,u) = [Arcsin{sqrt(1-rho^2u^2)} - rho*u*sqrt{1-rho^2u^2}]*u/sqrt(1-u^2)
-/// ```
-///
-/// Note that the angular integral function S(rho) ≈1 when rho >> 1.
+/// Under [`IntegrationMethod::AnAn`] with $d_{f} > 2$, the radial integral
+/// evaluates analytically as $\Gamma(a)\thinspace Q(a, x_{\min})$; otherwise
+/// trapezoidal quadrature over $1000$ log-spaced nodes up to $x_{\max} = 25$
+/// is performed (with $S(\rho)$ integrated numerically under
+/// [`IntegrationMethod::NumNum`] and set to $1$ otherwise).
 fn mean_overlap_efficiency(
     method: &IntegrationMethod,
     cutoff: &FractalCutoff,
@@ -198,11 +195,17 @@ fn mean_overlap_efficiency(
     sigma
 }
 
-/// Radial integrand function in `ln(x)` space
+/// Evaluates the radial integrand $f_{\mathrm{rad}}(x) = x^{a} e^{-x}$ in
+/// $\ln x$ space, so that
+/// $f_{\mathrm{rad}}(x)\thinspace\mathrm{d}\ln x = x^{a - 1} e^{-x}\thinspace\mathrm{d}x$.
 fn radial_integrand(a: f64, x: f64) -> f64 {
     x.powf(a) * (-x).exp()
 }
 
+/// Evaluates the angular monomer-overlap integral
+/// $$S(\rho) = \frac{16 \rho^{2}}{\pi} \int_{0}^{1/\rho} f_{\mathrm{ang}}(\rho, u) \thinspace \mathrm{d}u$$
+/// by trapezoidal quadrature over $1000$ uniform nodes in $u \in [0, 1/\rho]$
+/// ($S(\rho) \to 1$ in the limit $\rho \gg 1$).
 fn angular_integration(cutoff: &FractalCutoff, x: f64, xmin: f64, fractal_dim: f64) -> f64 {
     let nmax_u = 1000;
 
@@ -230,7 +233,9 @@ fn angular_integration(cutoff: &FractalCutoff, x: f64, xmin: f64, fractal_dim: f
     16.0 * rho * rho * angular_sum / PI
 }
 
-/// Angular integrand function in `u` space
+/// Evaluates the angular overlap integrand
+/// $$f_{\mathrm{ang}}(\rho, u) = \left[\arcsin\!\left(\sqrt{1 - \rho^{2} u^{2}}\right) - \rho u \sqrt{1 - \rho^{2} u^{2}}\right] \frac{u}{\sqrt{1 - u^{2}}},$$
+/// returning $0$ within $10^{-10}$ of the upper endpoint $\rho u = 1$.
 fn angular_integrand(rho: f64, u: f64) -> f64 {
     if (1.0 - rho * u).abs() <= 1e-10 {
         0.0
