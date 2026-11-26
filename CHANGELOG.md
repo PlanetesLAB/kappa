@@ -2,6 +2,12 @@
 
 All notable changes to `kappa` are documented in this file.
 
+## [1.1.0] - 2026-11-26
+
+### Changed
+
+- **Ergonomic `serde` configuration format (`opac`):** Switched `SizeDistribution`, `WavelengthGrid`, and `ScatteringMethod` to internally tagged `snake_case` (`tag = "type"`), switched `MaterialKind`, `MaterialSource`, and `AggregateStructure` to `snake_case`, enabled `deny_unknown_fields` across configuration types, derived `Default` (`Core`) for `MaterialKind`, and added serde defaults for `slope` (`3.5`), `count` (`300`), `fmax` (`0.8`), `size_limit` (`1e8`), `dhs_size_limit` (`1e4`), `keep_approximate_scattering` (`false`), `Material::kind`, and `KappaConfig`.
+
 ## [1.0.0] - 2026-11-26
 
 First stable release of `kappa` as both a Rust library and a standalone command-line tool.
