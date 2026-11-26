@@ -59,6 +59,31 @@ use crate::utils::regrid_lnk_data;
 /// Maximum number of material components permitted in a single grain mixture.
 const MAX_MATERIALS: usize = 20;
 
+#[cfg(feature = "serde")]
+const fn default_slope() -> f64 {
+    3.5
+}
+
+#[cfg(feature = "serde")]
+const fn default_nlam() -> usize {
+    300
+}
+
+#[cfg(feature = "serde")]
+const fn default_fmax() -> f64 {
+    0.8
+}
+
+#[cfg(feature = "serde")]
+const fn default_size_limit() -> f64 {
+    1e8
+}
+
+#[cfg(feature = "serde")]
+const fn default_dhs_size_limit() -> f64 {
+    1e4
+}
+
 /// Structured error type for `kappa` configuration, material lookup, I/O, and scattering solvers.
 #[derive(Debug)]
 pub enum KappaError {
@@ -105,11 +130,16 @@ impl From<anyhow::Error> for KappaError {
 }
 
 /// Placement of a material component inside a core-mantle grain.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(rename_all = "snake_case")
+)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MaterialKind {
     /// Refractory core component (blended with other core components and
     /// `core_porosity` via the Bruggeman rule).
+    #[default]
     Core,
     /// Coating mantle component (blended with other mantle components and
     /// `mantle_porosity` via the Bruggeman rule, then coated onto the core via
@@ -118,7 +148,11 @@ pub enum MaterialKind {
 }
 
 /// Optical constants source for a single dust component.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(rename_all = "snake_case", deny_unknown_fields)
+)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum MaterialSource {
     /// Key of a built-in optical constant table (for example, `"pyr-mg70"` or
@@ -152,12 +186,17 @@ impl MaterialSource {
 }
 
 /// A single material component in a dust grain mixture.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(deny_unknown_fields)
+)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Material {
     /// Source of optical constants and bulk density.
     pub source: MaterialSource,
     /// Placement in the grain core or mantle.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub kind: MaterialKind,
     /// Relative mass weight (automatically normalized across all components in
     /// [`KappaConfig::prepare`]).
@@ -198,7 +237,11 @@ impl Material {
 }
 
 /// Grain size distribution $f(a)$ specification (radii in $\mu\mathrm{m}$).
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)
+)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum SizeDistribution {
     /// Power-law number distribution $f(a) \propto a^{-p}$ over
@@ -210,6 +253,7 @@ pub enum SizeDistribution {
         /// Maximum grain radius $a_{\max}$ ($\mu\mathrm{m}$).
         max: f64,
         /// Positive power-law slope $p \ge 0$ in $f(a) \propto a^{-p}$.
+        #[cfg_attr(feature = "serde", serde(default = "default_slope"))]
         slope: f64,
         /// Optional number of size bins; defaults to
         /// $\max(\lfloor 15 \log_{10}(a_{\max}/a_{\min}) + 1 \rfloor, 5)$
@@ -393,7 +437,11 @@ impl SizeDistribution {
 }
 
 /// Wavelength grid specification in $\mu\mathrm{m}$.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)
+)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum WavelengthGrid {
     /// Logarithmically spaced grid of `count` points from `min` to `max`
@@ -404,6 +452,7 @@ pub enum WavelengthGrid {
         /// Maximum wavelength $\lambda_{\max} > 0$ ($\mu\mathrm{m}$).
         max: f64,
         /// Number of wavelength points $N_{\lambda}$.
+        #[cfg_attr(feature = "serde", serde(default = "default_nlam"))]
         count: usize,
     },
     /// Single monochromatic wavelength $\lambda > 0$ ($\mu\mathrm{m}$).
@@ -429,7 +478,11 @@ impl Default for WavelengthGrid {
 }
 
 /// Structural parameterization for Modified Mean Field (MMF) fractal aggregates.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(rename_all = "snake_case")
+)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AggregateStructure {
     /// Fixed fractal dimension $d_{f} \in (1, 3]$.
@@ -440,13 +493,18 @@ pub enum AggregateStructure {
 }
 
 /// Scattering theory and solver parameters.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)
+)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScatteringMethod {
     /// Lorenz-Mie theory for compact homogeneous spheres
     /// ([De Rooij & Van der Stap 1984](https://ui.adsabs.harvard.edu/abs/1984A%26A...131..237D/abstract)).
     Mie {
         /// Upper size-parameter cutoff $x_{\max}$ (default $10^{8}$).
+        #[cfg_attr(feature = "serde", serde(default = "default_size_limit"))]
         size_limit: f64,
     },
     /// Distribution of Hollow Spheres (DHS;
@@ -455,12 +513,15 @@ pub enum ScatteringMethod {
     /// 20-point Gauss-Legendre quadrature (or compact Mie when $f_{\max} \le 0.01$).
     Dhs {
         /// Maximum cavity volume fraction $f_{\max} \in [0, 1)$.
+        #[cfg_attr(feature = "serde", serde(default = "default_fmax"))]
         fmax: f64,
         /// Size parameter above which DHS falls back directly to compact Mie
         /// (default $10^{8}$).
+        #[cfg_attr(feature = "serde", serde(default = "default_size_limit"))]
         size_limit: f64,
         /// Effective outer-shell size-parameter cap passed to the core-shell
         /// solver (default $10^{4}$).
+        #[cfg_attr(feature = "serde", serde(default = "default_dhs_size_limit"))]
         dhs_size_limit: f64,
     },
     /// Modified Mean Field (MMF) theory for porous fractal aggregates
@@ -477,6 +538,7 @@ pub enum ScatteringMethod {
         /// If `true`, retain Mueller elements and $g$ even at wavelengths where
         /// the aggregate phase shift exceeds unity ($\Delta\phi > 1$); if
         /// `false`, zero them out at untrusted wavelengths.
+        #[cfg_attr(feature = "serde", serde(default))]
         keep_approximate_scattering: bool,
     },
     /// Continuous Distribution of Ellipsoids (CDE) in the Rayleigh limit
@@ -524,7 +586,11 @@ impl ScatteringMethod {
 
 /// Declarative configuration for a dust opacity calculation.
 #[allow(clippy::struct_excessive_bools)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default, deny_unknown_fields)
+)]
 #[derive(Clone, Debug)]
 pub struct KappaConfig {
     /// Core and mantle material components (at least one core component, at
