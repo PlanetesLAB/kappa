@@ -89,6 +89,10 @@ fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult>
         f_34: RVector::zeros(mie_cfg.nangle),
     };
 
+    if mie_cfg.rad <= 0.0 || mie_cfg.lam <= 0.0 || mie_cfg.step <= 0.0 || mie_cfg.nangle < 2 {
+        return Err(anyhow!("InvalidMieConfig"));
+    }
+
     let mut fac_90 = 1.0;
     let ci = Complex::new(0.0, 1.0);
 
@@ -99,8 +103,6 @@ fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult>
     let rtox = 2.0 * PI / lambda;
     let fakt = lambda * lambda / (2.0 * PI);
 
-    let nfac = 0;
-
     let w = 1.0;
     let r = mie_cfg.rad;
     let nwithr = 1.0;
@@ -110,25 +112,20 @@ fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult>
     let nmax = (x + 4.05 * x.powf(1.0 / 3.0) + 20.0) as usize;
     let nfi = nmax + 60;
     let zabs = x * m.abs();
-    let nd = (zabs + 4.05 * zabs.powf(1.0 / 3.0) + 70.0) as usize;
+    // Ensure downward recurrence for D_n(mx) starts well above nmax even when |m| < 1
+    // (De Rooij & Van der Stap 1984; Bohren & Huffman 1983, App. A).
+    let nd = ((zabs + 4.05 * zabs.powf(1.0 / 3.0) + 70.0) as usize).max(nmax + 70);
 
-    let size = nd.max(nfi).max(nmax);
-
-    let mut facf = RVector::zeros(size);
-    let mut facb = RVector::zeros(size);
+    let mut facf = RVector::zeros(nmax);
+    let mut facb = RVector::zeros(nmax);
 
     let (fi, chi, d) = fichid(m, x, nfi, nmax, nd);
     let (an, bn) = anbn(m, x, &fi, &chi, &d, nmax);
 
-    if nmax > nfac {
-        for n in nfac..nmax {
-            let nf = n as f64 + 1.0;
-            facf[n] = (2.0 * nf + 1.0) / (nf * (nf + 1.0));
-            facb[n] = facf[n];
-            if n % 2 != 1 {
-                facb[n] = -facb[n];
-            }
-        }
+    for n in 0..nmax {
+        let nf = n as f64 + 1.0;
+        facf[n] = (2.0 * nf + 1.0) / (nf * (nf + 1.0));
+        facb[n] = if n % 2 == 0 { -facf[n] } else { facf[n] };
     }
 
     let mut c_ext_sum = 0.0;
@@ -137,9 +134,7 @@ fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult>
 
     for n in 0..nmax {
         let nf = n as f64;
-        let afac = an[n] * an[n].conj();
-        let bfac = bn[n] * bn[n].conj();
-        let aux = (2.0 * (nf + 1.0) + 1.0) * (afac + bfac).abs();
+        let aux = (2.0 * (nf + 1.0) + 1.0) * (an[n].norm_sqr() + bn[n].norm_sqr());
         c_sca_sum += aux;
         c_ext_sum += (2.0 * (nf + 1.0) + 1.0) * (an[n] + bn[n]).re;
         if aux < mie_cfg.delta {
@@ -161,7 +156,7 @@ fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult>
     }
     let nfou = nfou.min(nmax);
 
-    let nangle = ((mie_cfg.thmax - mie_cfg.thmin) / mie_cfg.step) as usize + 1;
+    let nangle = ((mie_cfg.thmax - mie_cfg.thmin) / mie_cfg.step).round() as usize + 1;
     if nangle > 6000 {
         return Err(anyhow!("ScatteringAnglesOverflow"));
     }
@@ -179,6 +174,10 @@ fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult>
     mie_result.g += sw * r.powi(2);
     mie_result.reff += sw * r.powi(3);
 
+    let pitau_len = nfou.max(2);
+    let mut pi = RVector::zeros(pitau_len);
+    let mut tau = RVector::zeros(pitau_len);
+
     let mut nhalf: usize = 0;
     if symmetric {
         if nangle % 2 == 1 {
@@ -189,7 +188,7 @@ fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult>
         }
 
         for j in 0..nhalf {
-            let (pi, tau) = pitau(mie_result.u[j], nmax);
+            pitau_into(mie_result.u[j], &mut pi, &mut tau);
             let mut s_plus_f = Complex::new(0.0, 0.0);
             let mut s_min_f = Complex::new(0.0, 0.0);
             let mut s_plus_b = Complex::new(0.0, 0.0);
@@ -224,7 +223,7 @@ fn get_scattering_matrix(mie_cfg: &MieConfig, m: Complex64) -> Result<MieResult>
         }
     } else {
         for j in 0..nangle {
-            let (pi, tau) = pitau(mie_result.u[j], nmax);
+            pitau_into(mie_result.u[j], &mut pi, &mut tau);
             let mut s_plus_f = Complex::new(0.0, 0.0);
             let mut s_min_f = Complex::new(0.0, 0.0);
 
@@ -371,10 +370,8 @@ fn anbn(
 }
 
 #[inline(always)]
-fn pitau(u: f64, nmax: usize) -> (RVector, RVector) {
-    let mut pi = RVector::zeros(nmax);
-    let mut tau = RVector::zeros(nmax);
-
+fn pitau_into(u: f64, pi: &mut RVector, tau: &mut RVector) {
+    let nmax = pi.len();
     pi[0] = 1.0;
     pi[1] = 3.0 * u;
     let mut delta = 3.0 * u * u - 1.0;
@@ -388,6 +385,71 @@ fn pitau(u: f64, nmax: usize) -> (RVector, RVector) {
         delta = u * pi[n + 1] - pi[n];
         tau[n + 1] = (nf + 2.0) * delta - pi[n];
     }
+}
 
-    (pi, tau)
+#[cfg(test)]
+mod tests {
+    use std::f64::consts::PI;
+
+    use approx::assert_relative_eq;
+    use num_complex::Complex64;
+
+    use super::MieConfig;
+    use super::de_rooij_1984;
+
+    fn make_cfg(rad: f64, lam: f64, cmm: Complex64, nangle: usize) -> MieConfig {
+        let nf = nangle as f64;
+        let thmin = 180.0 * 0.5 / nf;
+        let thmax = 180.0 * (nf - 0.5) / nf;
+        MieConfig {
+            nangle,
+            delta: 1e-14,
+            thmin,
+            thmax,
+            step: (thmax - thmin) / (nf - 1.0),
+            lam,
+            cmm,
+            rad,
+        }
+    }
+
+    #[test]
+    fn mie_mueller_identity_and_rayleigh_limit() {
+        // Moderate sphere: F11^2 = F12^2 + F33^2 + F34^2 must hold at every angle
+        let cfg = make_cfg(1.0, 2.0 * PI / 3.0, Complex64::new(1.5, 0.1), 180);
+        let res = de_rooij_1984(&cfg).unwrap();
+        assert_relative_eq!(res.q_ext, 3.021_998_248, max_relative = 1e-7);
+        assert_relative_eq!(res.q_sca, 2.126_748_708, max_relative = 1e-7);
+        for j in 0..cfg.nangle {
+            let lhs = res.f_11[j].powi(2);
+            let rhs = res.f_12[j].powi(2) + res.f_33[j].powi(2) + res.f_34[j].powi(2);
+            assert_relative_eq!(lhs, rhs, max_relative = 1e-12);
+        }
+
+        // Deep Rayleigh limit (x = 2*pi*1e-4)
+        let ray = make_cfg(1e-4, 1.0, Complex64::new(1.5, 0.01), 180);
+        let rayleigh = de_rooij_1984(&ray).unwrap();
+        let x = 2.0 * PI * 1e-4;
+        let m = ray.cmm;
+        let alpha_fac = (m * m - 1.0) / (m * m + 2.0);
+        let q_sca_ray = 8.0 / 3.0 * x.powi(4) * alpha_fac.norm_sqr();
+        let q_abs_ray = 4.0 * x * alpha_fac.im;
+        assert_relative_eq!(rayleigh.q_sca, q_sca_ray, max_relative = 1e-4);
+        assert_relative_eq!(
+            rayleigh.q_ext - rayleigh.q_sca,
+            q_abs_ray,
+            max_relative = 1e-4
+        );
+    }
+
+    #[test]
+    fn mie_sub_unity_refractive_index_large_x() {
+        // Regression test for nd < nmax when |m| < 1 (e.g. CO2 ice near 4.2 um).
+        // With the bug (nd = 189 < nmax = 243), Q_ext was 1.9452 and Q_sca was 1.5789 (~5% wrong).
+        let x = 200.0;
+        let cfg = make_cfg(1.0, 2.0 * PI / x, Complex64::new(0.5, 0.05), 180);
+        let res = de_rooij_1984(&cfg).unwrap();
+        assert_relative_eq!(res.q_ext, 2.043_146_32, max_relative = 1e-6);
+        assert_relative_eq!(res.q_sca, 1.671_128_76, max_relative = 1e-6);
+    }
 }

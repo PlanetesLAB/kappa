@@ -95,14 +95,11 @@ pub fn toon_ackerman_1981(dhs_cfg: &DHSConfig) -> Result<DHSResult> {
     let x_core = dhs_cfg.r_core * dhs_cfg.wave_number;
 
     let mut t = RVector::zeros(5);
-    t[0] = x_shell * dhs_cfg.r_indsh.abs();
-    let mut nmx_1 = (1.1 * t[0]) as usize;
-    let mut nmx_2 = t[0] as usize;
-
-    if nmx_1 <= 150 {
-        nmx_1 = 150;
-        nmx_2 = 135;
-    }
+    // Ensure nmx_1/nmx_2 cover the Mie expansion order even when |m_shell| <= 1.
+    let max_arg = x_shell.max(x_shell * dhs_cfg.r_indsh.abs());
+    t[0] = max_arg;
+    let nmx_2 = ((max_arg + 4.05 * max_arg.powf(1.0 / 3.0) + 20.0).ceil() as usize).max(135);
+    let nmx_1 = ((1.1 * max_arg).ceil() as usize).max(nmx_2 + 15).max(150);
 
     let mut w = CMatrix::zeros((3, nmx_1 + 1));
     let mut acap = CVector::zeros(nmx_1 + 1);
@@ -126,7 +123,7 @@ pub fn toon_ackerman_1981(dhs_cfg: &DHSConfig) -> Result<DHSResult> {
         return Err(anyhow!("InvalidRefractiveIndex"));
     }
 
-    if dhs_cfg.numang > mxang || dhs_cfg.numang > dhs_cfg.max_angle {
+    if dhs_cfg.numang > mxang || dhs_cfg.numang > dhs_cfg.max_angle || dhs_cfg.mu.len() < dhs_cfg.numang {
         return Err(anyhow!("`numang` is too large."));
     }
     if nmx_1 + 1 > ll {
@@ -278,8 +275,8 @@ pub fn toon_ackerman_1981(dhs_cfg: &DHSConfig) -> Result<DHSResult> {
     let mut ac = 1.5 * acoe;
     let mut bc = 1.5 * bcoe;
 
-    let mut s0 = CMatrix::zeros((dhs_cfg.numang, 3));
-    let mut s1 = CMatrix::zeros((dhs_cfg.numang, 3));
+    let mut s0 = CMatrix::zeros((dhs_cfg.numang, 2));
+    let mut s1 = CMatrix::zeros((dhs_cfg.numang, 2));
 
     for j in 0..dhs_cfg.numang {
         s0[[j, 0]] = ac * pi[[j, 1]] + bc * tau[[j, 1]];
@@ -411,4 +408,113 @@ pub fn toon_ackerman_1981(dhs_cfg: &DHSConfig) -> Result<DHSResult> {
     dhs_result.q_bs = ((sback.re).powi(2) + (sback.im).powi(2)) / (PI * x_shell * x_shell);
 
     Ok(dhs_result)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::f64::consts::PI;
+
+    use approx::assert_relative_eq;
+    use num_complex::Complex64;
+    use planetes_ext::types::RVector;
+
+    use crate::mie::MieConfig;
+    use crate::mie::de_rooij_1984;
+
+    use super::DHSConfig;
+    use super::toon_ackerman_1981;
+
+    #[test]
+    fn dhs_homogeneous_limit_matches_mie_exactly() {
+        // When core and shell share the same refractive index, Toon & Ackerman (1981)
+        // must reproduce Lorenz-Mie across Q_ext, Q_sca, and all Mueller elements
+        // (with 2*factor on s10 and d10).
+        let r_shell = 1.0;
+        let x = 3.0;
+        let lam = 2.0 * PI / x;
+        let wvno = x / r_shell;
+        let m_pos = Complex64::new(1.5, 0.1);
+        let m_neg = m_pos.conj();
+        let nang = 180;
+        let half = nang / 2;
+
+        let mu = RVector::from_iter(
+            (0..half).map(|j| ((j as f64 + 0.5) / half as f64 * PI / 2.0).cos()),
+        );
+        let dhs = toon_ackerman_1981(&DHSConfig {
+            r_core: 0.5 * r_shell,
+            r_shell,
+            wave_number: wvno,
+            r_indsh: m_neg,
+            r_indco: m_neg,
+            mu: &mu,
+            numang: half,
+            max_angle: nang,
+        })
+        .unwrap();
+
+        let nf = nang as f64;
+        let thmin = 180.0 * 0.5 / nf;
+        let thmax = 180.0 * (nf - 0.5) / nf;
+        let mie = de_rooij_1984(&MieConfig {
+            nangle: nang,
+            delta: 1e-14,
+            thmin,
+            thmax,
+            step: (thmax - thmin) / (nf - 1.0),
+            lam,
+            cmm: m_pos,
+            rad: r_shell,
+        })
+        .unwrap();
+
+        assert_relative_eq!(dhs.q_ext, mie.q_ext, max_relative = 1e-10);
+        assert_relative_eq!(dhs.q_sca, mie.q_sca, max_relative = 1e-10);
+
+        let c_sca = dhs.q_sca * PI * r_shell * r_shell;
+        let factor = 2.0 * PI / (c_sca * wvno * wvno);
+        for j in 0..half {
+            for (k, idx) in [(0, j), (1, nang - 1 - j)] {
+                let f11 = (dhs.m1[[j, k]] + dhs.m0[[j, k]]) * factor;
+                let f12 = (dhs.m1[[j, k]] - dhs.m0[[j, k]]) * factor;
+                let f33 = 2.0 * dhs.s10[[j, k]] * factor;
+                let f34 = -2.0 * dhs.d10[[j, k]] * factor;
+                assert_relative_eq!(f11, mie.f_11[idx], max_relative = 1e-9);
+                assert_relative_eq!(f12, mie.f_12[idx], max_relative = 1e-9);
+                assert_relative_eq!(f33, mie.f_33[idx], max_relative = 1e-9);
+                assert_relative_eq!(f34, mie.f_34[idx], max_relative = 1e-8);
+            }
+        }
+    }
+
+    #[test]
+    fn dhs_hollow_sphere_satisfies_mueller_identity_and_sub_unity_m() {
+        // Hollow sphere with vacuum core and |m_shell| < 1 at x = 200
+        let mu = RVector::from_vec(vec![0.99, 0.5, 0.1]);
+        let dhs = toon_ackerman_1981(&DHSConfig {
+            r_core: 0.6,
+            r_shell: 1.0,
+            wave_number: 200.0,
+            r_indsh: Complex64::new(0.5, -0.05),
+            r_indco: Complex64::new(1.0, 0.0),
+            mu: &mu,
+            numang: 3,
+            max_angle: 6,
+        })
+        .unwrap();
+        assert!(dhs.q_ext > 0.0 && dhs.q_sca > 0.0 && dhs.q_ext >= dhs.q_sca);
+        for j in 0..3 {
+            for k in 0..2 {
+                let s11 = f64::midpoint(dhs.m1[[j, k]], dhs.m0[[j, k]]);
+                let s12 = 0.5 * (dhs.m1[[j, k]] - dhs.m0[[j, k]]);
+                let s33 = dhs.s10[[j, k]];
+                let s34 = -dhs.d10[[j, k]];
+                assert_relative_eq!(
+                    s11 * s11,
+                    s12 * s12 + s33 * s33 + s34 * s34,
+                    max_relative = 1e-12
+                );
+            }
+        }
+    }
 }
