@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use num_complex::ComplexFloat;
 use num_complex::{Complex, Complex64};
+use planetes_ext::progress::Progress;
 use planetes_ext::quadrature::gauss_legendre;
 use planetes_ext::types::{BVector, RVector};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -27,7 +28,6 @@ use crate::fractal::{FractalCutoff, FractalGeometry, FractalSolver};
 use crate::io::read_lnk_file;
 use crate::mie::MieConfig;
 use crate::mie::de_rooij_1984;
-use crate::progress::Progress;
 use crate::utils::regrid_lnk_data;
 
 /// Maximum number of material components permitted in a single grain mixture.
@@ -1109,7 +1109,7 @@ impl PreparedModel {
                 let fname = format!("{}_{:03}", self.config.label, ia + 1);
                 self.write_opacities_with_bounds(&fname, &p, aminsplit, amaxsplit, nsub)?;
                 if !self.config.quiet {
-                    progress.add(1);
+                    progress.inc(1);
                 }
                 Ok::<(), KappaError>(())
             })?;
@@ -1279,7 +1279,7 @@ impl PreparedModel {
                 .map(|ilam| {
                     let res = self.over_wavelengths(ilam, &kps);
                     if !self.config.quiet {
-                        progress.add(1);
+                        progress.inc(1);
                     }
                     res
                 })
