@@ -1,4 +1,16 @@
-//! Command-line interface for `kappa`.
+//! Command-line interface (CLI) for `kappa`.
+//!
+//! Available when the default `cli` Cargo feature is enabled. Parses flags and
+//! subcommands via `clap` into a [`Cli`] struct, converts them into a
+//! [`KappaConfig`] (or executes informational subcommands such as
+//! `kappa materials`) via [`Cli::into_action`], and exposes [`launch`] for
+//! [`crate`] binary entry points.
+//!
+//! Supported scattering methods include Distribution of Hollow Spheres (DHS),
+//! Lorenz-Mie theory, Modified Mean Field (MMF) aggregate theory, and the
+//! Continuous Distribution of Ellipsoids (CDE); built-in composition presets
+//! cover the DiscAnalysis (DIANA) and Disk Substructures at High Angular
+//! Resolution Project (DSHARP) dust models.
 
 use std::path::{Path, PathBuf};
 
@@ -14,45 +26,46 @@ use crate::opac::{
 };
 use crate::opac::{KappaConfig, Material};
 
-/// Result of parsing CLI arguments.
+/// Outcome of parsing command-line arguments.
 #[derive(Debug)]
 pub enum CliAction {
-    /// Execute an opacity calculation with the constructed configuration.
+    /// Execute an opacity calculation with the constructed [`KappaConfig`].
     Run(Box<KappaConfig>),
-    /// The command completed directly (e.g., `kappa materials`).
+    /// The command completed directly without running an opacity calculation
+    /// (for example, `kappa materials`).
     Done,
 }
 
-/// Built-in dust composition presets.
+/// Built-in dust composition presets selectable via `--preset`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Preset {
-    /// DIANA standard composition (87% pyroxene, 13% amorphous carbon, 25% porosity).
+    /// DiscAnalysis (DIANA) standard composition (87% pyroxene, 13% amorphous carbon, 25% porosity).
     Diana,
-    /// DSHARP composition (astrosilicate, organics, troilite, water ice).
+    /// Disk Substructures at High Angular Resolution Project (DSHARP) composition (astrosilicate, organics, troilite, water ice).
     Dsharp,
     /// Ice-free DSHARP composition (astrosilicate, organics, troilite).
     DsharpNoIce,
 }
 
-/// Scattering calculation method.
+/// Scattering calculation method selectable via `--method`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum MethodArg {
-    /// Distribution of Hollow Spheres (Min et al. 2005).
+    /// Distribution of Hollow Spheres (DHS; Min et al. 2005).
     Dhs,
-    /// Lorenz-Mie theory for compact spheres.
+    /// Lorenz-Mie theory for compact homogeneous spheres.
     Mie,
-    /// Modified Mean Field theory for fractal aggregates (Tazaki & Tanaka 2018).
+    /// Modified Mean Field (MMF) theory for fractal aggregates (Tazaki & Tanaka 2018).
     Mmf,
-    /// Continuous Distribution of Ellipsoids in the Rayleigh limit.
+    /// Continuous Distribution of Ellipsoids (CDE) in the Rayleigh limit.
     Cde,
 }
 
-/// Subcommands for `kappa`.
+/// Subcommands supported by the `kappa` executable.
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// List all built-in materials, or inspect metadata for a single material key.
     Materials {
-        /// Optional material key to inspect in detail (e.g. `pyr-mg70`, `h2o-w`).
+        /// Optional material key to inspect in detail (for example, `pyr-mg70` or `h2o-w`).
         key: Option<String>,
     },
 }
@@ -68,6 +81,7 @@ pub enum Command {
                   Without composition flags, defaults to the DIANA standard mixture."
 )]
 pub struct Cli {
+    /// Optional subcommand (for example, `materials`).
     #[command(subcommand)]
     pub command: Option<Command>,
 
@@ -530,7 +544,17 @@ impl Cli {
     }
 }
 
-/// Parses `<key|file.lnk|n:k:rho>[=mfrac]`. Returns `Ok(None)` if `mfrac == 0.0`.
+/// Parses a material specification `<key|file.lnk|n:k:rho>[=mfrac]` into a
+/// [`Material`] of the given `kind`.
+///
+/// Defaults `mfrac` to `1.0` when omitted, and returns `Ok(None)` when an
+/// explicit mass fraction of `0.0` is supplied (so zero-weight components are
+/// omitted cleanly).
+///
+/// # Errors
+/// Returns [`KappaError::InvalidConfig`] if `mfrac` or `n:k:rho` cannot be
+/// parsed or is invalid, or [`KappaError::UnknownMaterial`] if an unrecognized
+/// material key is given.
 fn parse_material_spec(spec: &str, kind: MaterialKind) -> Result<Option<Material>, KappaError> {
     let (target, mfrac) = if let Some((lhs, rhs)) = spec.rsplit_once('=') {
         let frac = rhs.parse::<f64>().map_err(|_| {
@@ -578,6 +602,11 @@ fn parse_material_spec(spec: &str, kind: MaterialKind) -> Result<Option<Material
     }
 }
 
+/// Parses a `MEAN:SIGMA` pair for `--log-normal` or `--normal`.
+///
+/// # Errors
+/// Returns [`KappaError::InvalidConfig`] if the delimiter is missing or either
+/// component fails to parse as `f64`.
 fn parse_pair(spec: &str, flag: &str) -> Result<(f64, f64), KappaError> {
     let (lhs, rhs) = spec.split_once(':').ok_or_else(|| {
         KappaError::InvalidConfig(format!("{flag} expects `MEAN:SIGMA`, got `{spec}`"))
@@ -591,6 +620,12 @@ fn parse_pair(spec: &str, flag: &str) -> Result<(f64, f64), KappaError> {
     Ok((a, b))
 }
 
+/// Prints detailed metadata (name, class, state, density, wavelength range,
+/// and table size) for a single built-in material `key` to `stdout`.
+///
+/// # Errors
+/// Returns [`KappaError::UnknownMaterial`] if `key` is not in the built-in
+/// optical constant table.
 fn inspect_material(key: &str) -> Result<(), KappaError> {
     let comp =
         try_get_lnk_data(key).ok_or_else(|| KappaError::UnknownMaterial(key.to_string()))?;
@@ -609,6 +644,8 @@ fn inspect_material(key: &str) -> Result<(), KappaError> {
     Ok(())
 }
 
+/// Prints a formatted summary table of all built-in material keys in
+/// [`MATERIAL_KEYS`] to `stdout`.
 fn list_materials() {
     println!(
         "{:<14} {:<10} {:<12} {:>6}  {:>23}  {}",
