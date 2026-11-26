@@ -1,4 +1,8 @@
-//! File readers for optical constants (`.lnk`), size distributions, and wavelength grids.
+//! ASCII file readers for optical constants (`.lnk`), tabulated grain size
+//! distributions, and wavelength grids.
+//!
+//! All readers ignore blank lines and comment lines beginning with `#`, `!`,
+//! or `*` (after leading whitespace).
 
 use std::fs::File;
 use std::io::BufRead;
@@ -10,6 +14,8 @@ use planetes_ext::types::RVector;
 
 use crate::opac::Component;
 
+/// Returns `true` if `line` (after trimming whitespace) is empty or begins
+/// with a recognized comment prefix (`#`, `!`, or `*`).
 fn is_comment_or_empty(line: &str) -> bool {
     let trimmed = line.trim();
     trimmed.is_empty()
@@ -18,11 +24,32 @@ fn is_comment_or_empty(line: &str) -> bool {
         || trimmed.starts_with('*')
 }
 
-/// Reads a `.lnk` optical constants file and constructs a [`Component`].
+/// Reads an optical constants (`.lnk`) file and constructs a [`Component`].
+///
+/// # File Format
+/// - Optional metadata comments before the header of the form `# Name: ...`,
+///   `# Class: ...`, and `# State: ...`.
+/// - First non-comment line (header): `nlam [rho]`, where `nlam` is the number
+///   of tabulated wavelength rows and `rho` is the material density in
+///   $\mathrm{g\thinspace cm^{-3}}$. If `rho` is omitted from the header,
+///   `rho_in` is used as a fallback.
+/// - Subsequent `nlam` non-comment data lines: `lambda  n  k` giving
+///   wavelength $\lambda$ ($\mu\mathrm{m}$) and complex refractive index
+///   $m = n + i k$.
+///
+/// Data listed in descending wavelength order are automatically reversed to
+/// ascending order, and non-positive $n$ or $k$ values are clamped to
+/// $10^{-10}$ so that downstream log-log interpolation remains well-defined.
+///
+/// # Arguments
+/// - `file`: Path to the `.lnk` file.
+/// - `rho_in`: Optional fallback material density ($\mathrm{g\thinspace cm^{-3}}$)
+///   used only when the file header omits `rho`.
 ///
 /// # Errors
-/// Returns an error if the file cannot be opened or read, if the header or density is missing or
-/// invalid, or if any data row is missing or malformed.
+/// Returns an error if the file cannot be opened or read, if the header count
+/// or density is missing or invalid, if any data row is missing or non-finite
+/// (or has $\lambda \le 0$), or if fewer than `nlam` rows are present.
 pub fn read_lnk_file(file: &str, rho_in: Option<f64>) -> Result<Component> {
     let file = File::open(file)?;
     let reader = BufReader::new(file);
@@ -145,11 +172,24 @@ pub fn read_lnk_file(file: &str, rho_in: Option<f64>) -> Result<Component> {
     })
 }
 
-/// Reads a tabulated grain size distribution file and returns `(radii, weights, moments)`.
+/// Reads a tabulated grain size distribution file and returns
+/// `(radii, weights, moments)`.
+///
+/// # File Format
+/// - First non-comment line: integer bin count $N_{a} > 0$.
+/// - Subsequent $N_{a}$ non-comment data lines: `a  w` giving grain radius
+///   $a_{i} > 0$ ($\mu\mathrm{m}$) and non-negative number weight $w_{i} \ge 0$.
+///
+/// # Returns
+/// Tuple `(radii, weights, moments)` where `moments` contains the first three
+/// number-weighted root moments:
+/// $$\left[\frac{\sum w_{i} a_{i}}{\sum w_{i}},\ \left(\frac{\sum w_{i} a_{i}^{2}}{\sum w_{i}}\right)^{1/2},\ \left(\frac{\sum w_{i} a_{i}^{3}}{\sum w_{i}}\right)^{1/3}\right].$$
 ///
 /// # Errors
-/// Returns an error if the file cannot be opened or read, if the header count or any data row is
-/// missing or invalid, or if the total number weight is non-positive.
+/// Returns an error if the file cannot be opened or read, if the header count
+/// or any data row is missing or invalid ($a_{i} \le 0$, $w_{i} < 0$, or
+/// non-finite), if fewer than $N_{a}$ rows are present, or if the total weight
+/// $\sum w_{i} \le 0$.
 pub fn read_sizedis_file(file: &str) -> Result<(RVector, RVector, [f64; 3])> {
     let file = File::open(file)?;
     let reader = BufReader::new(file);
@@ -224,11 +264,20 @@ pub fn read_sizedis_file(file: &str) -> Result<(RVector, RVector, [f64; 3])> {
     Ok((RVector::from_vec(r_vec), RVector::from_vec(nr_vec), moments))
 }
 
-/// Reads a wavelength grid from a single-column or multi-column (e.g. `.lnk`) file.
+/// Reads a wavelength grid from a single-column or multi-column (for example,
+/// `.lnk`) file and returns `(n_wavelengths, wavelengths)`.
+///
+/// # File Format
+/// - First non-comment line: integer wavelength count $N_{\lambda} > 0$ (any
+///   trailing tokens on the header line are ignored).
+/// - Subsequent $N_{\lambda}$ non-comment data lines: wavelength
+///   $\lambda_{i} > 0$ ($\mu\mathrm{m}$) in the first whitespace-separated
+///   column (extra columns are ignored).
 ///
 /// # Errors
-/// Returns an error if the file cannot be opened or read, if the header count or any wavelength
-/// entry is missing, non-positive, or malformed, or if there are fewer rows than declared.
+/// Returns an error if the file cannot be opened or read, if the header count
+/// or any wavelength entry is missing, non-positive, non-finite, or malformed,
+/// or if fewer than $N_{\lambda}$ rows are present.
 pub fn read_wavelength_grid(file: &str) -> Result<(usize, RVector)> {
     let file = File::open(file)?;
     let reader = BufReader::new(file);
