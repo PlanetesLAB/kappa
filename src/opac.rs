@@ -11,7 +11,6 @@ use std::io::BufWriter;
 use std::io::Write;
 use std::mem::swap;
 use std::path::Path;
-use std::sync::Once;
 
 use anyhow::Result;
 use anyhow::anyhow;
@@ -872,6 +871,7 @@ impl KappaConfig {
         let mut e2_blend = RVector::zeros(self.nlam);
         let mut core_buf = vec![Complex64::new(0.0, 0.0); ncore];
         let mut mantle_buf = vec![Complex64::new(0.0, 0.0); nmant];
+        let mut bruggeman_warned = false;
 
         // Mixing, for all wavelengths
         for il in 0..self.nlam {
@@ -883,7 +883,13 @@ impl KappaConfig {
                 for im in 0..ncore {
                     core_buf[im] = Complex::new(e1[[il, im]], e2[[il, im]]);
                 }
-                let e_out = bruggeman_blend(&core_vfracs, &core_buf)?;
+                let (e_out, converged) = bruggeman_blend(&core_vfracs, &core_buf)?;
+                if !converged && !bruggeman_warned && !self.quiet {
+                    eprintln!(
+                        "Warning: bruggeman: blend not converged (further occurrences not reported)"
+                    );
+                    bruggeman_warned = true;
+                }
                 e1_blend[il] = e_out.re;
                 e2_blend[il] = e_out.im;
             }
@@ -897,7 +903,13 @@ impl KappaConfig {
                         mantle_buf[im] =
                             Complex::new(e1[[il, im + ncore]], e2[[il, im + ncore]]);
                     }
-                    let e_out = bruggeman_blend(&mantle_vfracs, &mantle_buf)?;
+                    let (e_out, converged) = bruggeman_blend(&mantle_vfracs, &mantle_buf)?;
+                    if !converged && !bruggeman_warned && !self.quiet {
+                        eprintln!(
+                            "Warning: bruggeman: blend not converged (further occurrences not reported)"
+                        );
+                        bruggeman_warned = true;
+                    }
                     e1mantle[il] = e_out.re;
                     e2mantle[il] = e_out.im;
                 }
@@ -2041,7 +2053,7 @@ impl From<&crate::components::StaticComponent> for Component {
     }
 }
 
-fn bruggeman_blend(abun: &[f64], e_in: &[Complex64]) -> Result<Complex64> {
+fn bruggeman_blend(abun: &[f64], e_in: &[Complex64]) -> Result<(Complex64, bool)> {
     let mut abunvac = 1.0 - abun.iter().sum::<f64>();
     let mvac = Complex::new(1.0, 0.0);
     if abunvac < 0.0 {
@@ -2069,13 +2081,8 @@ fn bruggeman_blend(abun: &[f64], e_in: &[Complex64]) -> Result<Complex64> {
         me = mm * ((2.0 * tot + 1.0) / (1.0 - tot)).sqrt();
         mm = me;
     }
-    if tot.abs() / mm.abs() > 1e-6 {
-        static WARNED: Once = Once::new();
-        WARNED.call_once(|| {
-            eprintln!("Warning: bruggeman: blend not converged (further occurrences not reported)");
-        });
-    }
-    Ok(me)
+    let converged = tot.abs() / mm.abs() <= 1e-6;
+    Ok((me, converged))
 }
 
 fn maxwell_garnet_blend(m1: Complex64, m2: Complex64, vf_m: f64) -> (f64, f64) {

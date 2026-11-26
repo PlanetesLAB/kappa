@@ -148,12 +148,10 @@ pub mod legendre {
 pub mod bessel {
     use anyhow::Result;
     use anyhow::bail;
-    use ndarray::Array1;
     use num_complex::{Complex, Complex64};
-    use planetes_ext::types::{CVector, RVector};
 
-    use crate::fractal::FractalGeometry;
-    use crate::fractal::{FractalConfig, FractalCutoff};
+    use crate::fractal::FractalConfig;
+    use crate::fractal::{FractalCutoff, FractalGeometry};
 
     use super::special::two_point_correlation;
 
@@ -272,7 +270,7 @@ pub mod bessel {
         let eta2 = 40.0;
 
         let nn = 100_000; // Number of grid points in the numerical integration of S_p(kRg)
-        let nnf = nn as f64;
+        let nnf = f64::from(nn);
 
         let umax = match fracc.cutoff {
             FractalCutoff::Gaussian => 2.0 * x_g * (eta1 / fracc.df).sqrt(),
@@ -281,23 +279,24 @@ pub mod bessel {
         };
 
         let umin = x_g * (-eta2 / fracc.df).exp();
-        let du = (umax / umin).powf(1.0 / (nnf - 1.0));
-
-        let mut u: RVector = Array1::zeros(nn);
-        let mut intg: CVector = Array1::zeros(nn);
-        let mut intg_unit: RVector = Array1::zeros(nn);
-
-        for (n, val) in u.iter_mut().enumerate().take(nn) {
-            *val = umin * du.powi(n as i32);
-        }
+        let ln_umin = umin.ln();
+        let d_ln_u = (umax / umin).ln() / (nnf - 1.0);
 
         let (a, b) = BoundaryCondition::TazakiTanaka.coefficients();
-
         let lnxa = a[0] * pf.powf(3.0) + a[1] * pf.powf(2.0) + a[2] * pf + a[3];
         let lnxb = b[0] * pf.powf(3.0) + b[1] * pf.powf(2.0) + b[2] * pf + b[3];
 
+        // Reusable downward-recurrence workspace (avoids 10^5 allocations per call).
+        let mut k_buf = vec![0.0; p + 101];
+        let mut wa = Complex::new(0.0, 0.0);
+        let mut unitary = 0.0;
+        let mut prev_u = 0.0;
+        let mut prev_intg = Complex::new(0.0, 0.0);
+        let mut prev_unit = 0.0;
+
         for n in 0..nn {
-            let ln_u = u[n].ln();
+            let ln_u = ln_umin + f64::from(n) * d_ln_u;
+            let u_val = ln_u.exp();
             let isol = if ln_u < lnxa {
                 1
             } else if ln_u > lnxb {
@@ -305,10 +304,7 @@ pub mod bessel {
             } else {
                 2
             };
-            let (sj, sy) = sph_bessel(p, u[n], isol)?;
-            let jp = sj[p];
-            let yp = sy[p];
-            let hp = Complex::new(jp, yp);
+            let (jp, yp) = sph_bessel_order(p, u_val, isol, &mut k_buf)?;
 
             if !jp.is_finite() {
                 bail!("Error in sph_bessel (jp)");
@@ -316,33 +312,23 @@ pub mod bessel {
                 bail!("Error in sph_bessel (yp)");
             }
 
-            let fc = two_point_correlation(fracc, u[n], x_g);
-            let u_weight = u[n].powf(fracc.df - 1.0) * fc;
-            intg[n] = u_weight * jp * hp;
-            intg_unit[n] = u_weight;
+            let fc = two_point_correlation(fracc, u_val, x_g);
+            let u_weight = ((fracc.df - 1.0) * ln_u).exp() * fc;
+            let curr_intg = u_weight * jp * Complex::new(jp, yp);
+
+            if n > 0 {
+                let du_step = u_val - prev_u;
+                wa += 0.5 * (prev_intg + curr_intg) * du_step;
+                unitary += f64::midpoint(prev_unit, u_weight) * du_step;
+            }
+            prev_u = u_val;
+            prev_intg = curr_intg;
+            prev_unit = u_weight;
         }
 
-        // Use iterators to apply the trapezoidal rule
-        let wa: Complex64 = intg
-            .windows(2)
-            .into_iter()
-            .zip(u.windows(2))
-            .map(|(intg_pair, u_pair)| {
-                0.5 * (intg_pair[0] + intg_pair[1]) * (u_pair[1] - u_pair[0])
-            })
-            .sum::<Complex64>();
-
-        let mut unitary: f64 = intg_unit
-            .windows(2)
-            .into_iter()
-            .zip(u.windows(2))
-            .map(|(intg_unit_pair, u_pair)| {
-                f64::midpoint(intg_unit_pair[0], intg_unit_pair[1]) * (u_pair[1] - u_pair[0])
-            })
-            .sum();
-
-        unitary /= x_g.powf(fracc.df);
-        let mut sp = 0.5 * wa / x_g.powf(fracc.df);
+        let x_g_df = x_g.powf(fracc.df);
+        unitary /= x_g_df;
+        let mut sp = 0.5 * wa / x_g_df;
         let error = (1.0 - unitary).abs();
 
         if sp.re.abs() < floor_val {
@@ -359,28 +345,28 @@ pub mod bessel {
         Ok(sp)
     }
 
-    fn sph_bessel(m: usize, x: f64, isol: usize) -> Result<(RVector, RVector)> {
+    fn sph_bessel_order(m: usize, x: f64, isol: usize, k_buf: &mut [f64]) -> Result<(f64, f64)> {
         let imax = 100; // truncation order of the series expansion
         let nwarmup = 100; // number of warm-up iterations
 
         let floor_val = 1.0e-70;
         let ceiling_val = 1.0e+70;
 
-        let mut sj: RVector = Array1::zeros(m + 1);
-        sj[0] = x.sin() / x;
-
-        let mut sy: RVector = Array1::zeros(m + 1);
-        sy[0] = -x.cos() / x;
+        let sin_x = x.sin();
+        let cos_x = x.cos();
+        let sj0 = sin_x / x;
+        let sy0 = -cos_x / x;
 
         if m == 0 {
-            return Ok((sj, sy));
+            return Ok((sj0, sy0));
         }
 
-        match isol {
+        let jp = match isol {
             1 => {
                 // Series expansion
                 let mut f_n = 1.0;
-                for (n, val) in sj.iter_mut().enumerate().skip(1).take(m) {
+                let mut val = 0.0;
+                for n in 1..=m {
                     let nf = n as f64;
                     f_n *= x / (2.0 * nf + 1.0);
                     let mut xi = 1.0;
@@ -393,93 +379,108 @@ pub mod bessel {
                             break;
                         }
                     }
-                    *val = f_n * (1.0 + wa);
+                    val = f_n * (1.0 + wa);
                     if val.abs() <= floor_val {
+                        if n < m {
+                            val = 0.0;
+                        }
                         break;
                     }
                 }
+                val
             }
             2 => {
-                // Downward recursion
+                // Downward recursion using caller-provided workspace
                 let mut k1 = 0.0;
                 let mut k0 = 1.0;
-                let mut k: RVector = Array1::zeros(m + nwarmup + 1);
                 for n in (0..=m + nwarmup).rev() {
                     let nf = n as f64;
-                    k[n] = -k1 + (2.0 * nf + 3.0) * k0 / x;
+                    let kn = -k1 + (2.0 * nf + 3.0) * k0 / x;
+                    k_buf[n] = kn;
                     k1 = k0;
-                    k0 = k[n];
+                    k0 = kn;
                 }
-                let s = sj[0] / k[0];
-                for (n, val) in sj.iter_mut().enumerate().skip(1).take(m) {
-                    *val = s * k[n];
+                let s = sj0 / k_buf[0];
+                let mut val = 0.0;
+                for &kn in &k_buf[1..=m] {
+                    val = s * kn;
                     if val.abs() <= floor_val {
                         break;
                     }
+                }
+                if (s * k_buf[m]).abs() <= floor_val {
+                    0.0
+                } else {
+                    val
                 }
             }
             3 => {
                 // Upward recursion
-                sj[1] = x.sin() / (x * x) - x.cos() / x;
-                let mut k0 = sj[0];
-                let mut k1 = sj[1];
+                let mut k0 = sj0;
+                let mut k1 = sin_x / (x * x) - cos_x / x;
                 for n in 1..m {
                     let nf = n as f64;
-                    sj[n + 1] = (2.0 * nf + 1.0) * k1 / x - k0;
+                    let k2 = (2.0 * nf + 1.0) * k1 / x - k0;
                     k0 = k1;
-                    k1 = sj[n + 1];
+                    k1 = k2;
                 }
+                k1
             }
             _ => {
                 bail!("Invalid isol value");
             }
-        }
+        };
 
         // Spherical Bessel function of the second kind
-        sy[1] = -x.cos() / (x * x) - x.sin() / x;
-        let mut y0 = sy[0];
-        let mut y1 = sy[1];
-        for (n, val) in sy.iter_mut().enumerate().skip(2).take(m) {
-            let nf = n as f64;
-            *val = (2.0 * nf - 1.0) * y1 / x - y0;
-            y0 = y1;
-            y1 = *val;
-            if val.abs() >= ceiling_val {
-                break;
+        let mut y0 = sy0;
+        let mut y1 = -cos_x / (x * x) - sin_x / x;
+        let yp = if m == 1 {
+            y1
+        } else {
+            let mut val = y1;
+            for n in 2..=m {
+                let nf = n as f64;
+                val = (2.0 * nf - 1.0) * y1 / x - y0;
+                y0 = y1;
+                y1 = val;
+                if val.abs() >= ceiling_val {
+                    if n < m {
+                        val = 0.0;
+                    }
+                    break;
+                }
             }
-        }
+            val
+        };
 
-        Ok((sj, sy))
+        Ok((jp, yp))
     }
 }
 
 pub mod linalg {
     use anyhow::{Result, bail};
-    use ndarray::{Array1, Array2};
     use num_complex::Complex64;
-    use planetes_ext::types::{CMatrix, CVector, RMatrix, RVector, UVector};
+    use planetes_ext::types::{CMatrix, CVector};
 
-    fn lu_decomposition(a: &mut RMatrix, n: usize) -> Result<UVector> {
-        let mut d = 1.0;
-        let mut imax = 0;
-        let eps = 1e-20;
-
-        let mut vv: RVector = Array1::zeros(n);
-        let mut indx: UVector = Array1::zeros(n);
-
-        let mut aamax;
+    /// Performs in-place Crout LU decomposition with implicit scaled partial pivoting on a
+    /// square complex matrix `a` of dimension `n x n`.
+    fn complex_lu_decomposition(a: &mut CMatrix, n: usize) -> Result<Vec<usize>> {
+        let eps = Complex64::new(1e-20, 0.0);
+        let mut row_scale = vec![0.0; n];
+        let mut pivot = vec![0usize; n];
 
         for i in 0..n {
-            aamax = 0.0;
+            let mut max_abs = 0.0;
             for j in 0..n {
-                if a[[i, j]].abs() > aamax {
-                    aamax = a[[i, j]].abs();
+                let v = a[[i, j]].norm();
+                if v > max_abs {
+                    max_abs = v;
                 }
             }
-            if aamax == 0.0 {
-                bail!("ERROR: Singular matrix in routine lu_decomposition");
+            if max_abs == 0.0 {
+                bail!("Singular matrix in complex_lu_decomposition");
             }
-            vv[i] = 1.0 / aamax;
+            row_scale[i] = 1.0 / max_abs;
         }
 
         for j in 0..n {
@@ -490,105 +491,94 @@ pub mod linalg {
                 }
                 a[[i, j]] = sum;
             }
-            aamax = 0.0;
+
+            let mut max_scaled = 0.0;
+            let mut imax = j;
             for i in j..n {
                 let mut sum = a[[i, j]];
                 for k in 0..j {
                     sum -= a[[i, k]] * a[[k, j]];
                 }
                 a[[i, j]] = sum;
-                let dum = vv[i] * sum.abs();
-                if dum >= aamax {
+                let scaled = row_scale[i] * sum.norm();
+                if scaled >= max_scaled {
+                    max_scaled = scaled;
                     imax = i;
-                    aamax = dum;
                 }
             }
+
             if j != imax {
                 for k in 0..n {
-                    let dum = a[[imax, k]];
+                    let tmp = a[[imax, k]];
                     a[[imax, k]] = a[[j, k]];
-                    a[[j, k]] = dum;
+                    a[[j, k]] = tmp;
                 }
-                d = -d;
-                vv[imax] = vv[j];
+                row_scale[imax] = row_scale[j];
             }
-            indx[j] = imax;
-            if a[[j, j]] == 0.0 {
+            pivot[j] = imax;
+
+            if a[[j, j]] == Complex64::new(0.0, 0.0) {
                 a[[j, j]] = eps;
             }
-            if j != n - 1 {
-                let dum = 1.0 / a[[j, j]];
+            if j + 1 < n {
+                let inv_diag = Complex64::new(1.0, 0.0) / a[[j, j]];
                 for i in j + 1..n {
-                    a[[i, j]] *= dum;
+                    a[[i, j]] *= inv_diag;
                 }
             }
         }
 
-        Ok(indx)
+        Ok(pivot)
     }
 
-    fn lu_backsubstitution(a: &RMatrix, b: &mut RVector, indx: &UVector, n: usize) {
-        let mut ii: Option<usize> = None;
+    fn complex_lu_solve(lu: &CMatrix, b: &mut CVector, pivot: &[usize], n: usize) {
+        let zero = Complex64::new(0.0, 0.0);
+        let mut first_nonzero: Option<usize> = None;
+
         for i in 0..n {
-            let ll = indx[i];
-            let mut sum = b[ll];
-            b[ll] = b[i];
-            if let Some(start) = ii {
+            let ip = pivot[i];
+            let mut sum = b[ip];
+            b[ip] = b[i];
+            if let Some(start) = first_nonzero {
                 for j in start..i {
-                    sum -= a[[i, j]] * b[j];
+                    sum -= lu[[i, j]] * b[j];
                 }
-            } else if sum != 0.0 {
-                ii = Some(i);
+            } else if sum != zero {
+                first_nonzero = Some(i);
             }
             b[i] = sum;
         }
+
         for i in (0..n).rev() {
             let mut sum = b[i];
             for j in i + 1..n {
-                sum -= a[[i, j]] * b[j];
+                sum -= lu[[i, j]] * b[j];
             }
-            b[i] = sum / a[[i, i]];
+            b[i] = sum / lu[[i, i]];
         }
     }
 
-    /// Solves the linear equation $T r = p$ for $r$, where
-    /// $T$ is a complex matrix and $p$ is a complex vector. The function
-    /// uses LU decomposition and back substitution to find the solution.
+    /// Solves the complex linear system $T r = p$ for $r$ directly on $\mathbb{C}^{n \times n}$
+    /// using LU decomposition with scaled partial pivoting.
     ///
     /// # Errors
-    /// - If the matrix $T$ is singular, an error will be returned.
+    /// Returns an error if the matrix $T$ is singular or has incompatible dimensions.
     pub fn complex_matrix_inverse(
         n: usize,
-        np: usize,
+        _np: usize,
         p: &CVector,
         t: &CMatrix,
     ) -> Result<CVector> {
-        let mut a: RMatrix = Array2::zeros((np, np));
-        let mut b: RVector = Array1::zeros(np);
-
-        let mut r: CVector = Array1::zeros(n);
-
-        for i in 0..n {
-            for j in 0..n {
-                a[[i, j]] = t[[i, j]].re;
-                a[[i, j + n]] = -t[[i, j]].im;
-                a[[i + n, j]] = t[[i, j]].im;
-                a[[i + n, j + n]] = t[[i, j]].re;
-            }
-            b[i] = p[i].re;
-            b[i + n] = p[i].im;
+        if n == 0 || t.nrows() < n || t.ncols() < n || p.len() < n {
+            bail!("Invalid dimensions in complex_matrix_inverse");
         }
+        let mut lu = t.slice(ndarray::s![0..n, 0..n]).to_owned();
+        let mut rhs = p.slice(ndarray::s![0..n]).to_owned();
 
-        // LU decomposition
-        let indx = lu_decomposition(&mut a, np)?;
-        // LU backsubstitution
-        lu_backsubstitution(&a, &mut b, &indx, np);
+        let pivot = complex_lu_decomposition(&mut lu, n)?;
+        complex_lu_solve(&lu, &mut rhs, &pivot, n);
 
-        for i in 0..n {
-            r[i] = Complex64::new(b[i], b[i + n]);
-        }
-
-        Ok(r)
+        Ok(rhs)
     }
 }
 
