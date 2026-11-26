@@ -30,7 +30,7 @@ pub mod constants {
     /// Natural logarithm of $\pi$, $\ln \pi$.
     pub const LN_PI: f64 = 1.1447298858494001741434273513530587116472948129153;
 
-    /// Constant $\ln\!\left(2\sqrt{e / \pi}\right)$ used in the Lanczos
+    /// Constant $\ln\left(2\sqrt{e / \pi}\right)$ used in the Lanczos
     /// approximation to $\ln \Gamma(x)$.
     pub const LN_2_SQRT_E_OVER_PI: f64 = 0.6207822376352452223455184457816472122518527279025978;
 
@@ -68,11 +68,12 @@ pub mod legendre {
     /// $$\frac{\mathrm{d} P_{k}^{m}(x)}{\mathrm{d}x} = \frac{k x P_{k}^{m}(x) - (k + m) P_{k-1}^{m}(x)}{x^{2} - 1}.$$
     ///
     /// At the endpoints $|x| = 1$, exact closed-form limits are evaluated for
-    /// $m \in \{0, 1, 2\}$; because $\mathrm{d}P_{k}^{1}/\mathrm{d}x$ diverges
-    /// at $|x| = 1$, it is capped at $10^{300}$. Entries with $k < m$ are zero.
+    /// $m \in \lbrace 0, 1, 2 \rbrace$; because $\mathrm{d}P_{k}^{1}/\mathrm{d}x$
+    /// diverges at $|x| = 1$, it is capped at $10^{300}$. Entries with $k < m$
+    /// are zero.
     ///
     /// # Arguments
-    /// - `m`: Order $m \in \{0, 1, 2\}$ (orders $m > 2$ are rejected at $|x| = 1$).
+    /// - `m`: Order $m \in \lbrace 0, 1, 2 \rbrace$ (orders $m > 2$ are rejected at $|x| = 1$).
     /// - `n`: Maximum degree $n$.
     /// - `x`: Evaluation point $x \in [-1, 1]$.
     ///
@@ -280,7 +281,7 @@ pub mod bessel {
     /// Starting from
     /// $$S_{p}(k R_{g}) = \frac{\pi^{2}}{k^{3}} \int_{0}^{\infty} u \thinspace J_{p+1/2}(u) \thinspace H_{p+1/2}^{(1)}(u) \thinspace g(u/k) \thinspace \mathrm{d}u$$
     /// with the two-point monomer correlation function
-    /// $$g(r) = \frac{1}{4 \pi R_{g}^{3}} \left(\frac{r}{R_{g}}\right)^{d_{f} - 3} f_{c}\!\left(\frac{r}{R_{g}}\right)$$
+    /// $$g(r) = \frac{1}{4 \pi R_{g}^{3}} \left(\frac{r}{R_{g}}\right)^{d_{f} - 3} f_{c}\left(\frac{r}{R_{g}}\right)$$
     /// and the spherical Bessel relations
     /// $J_{p+1/2}(u) = \sqrt{2u/\pi}\thinspace j_{p}(u)$ and
     /// $H_{p+1/2}^{(1)}(u) = \sqrt{2u/\pi}\thinspace h_{p}^{(1)}(u)$
@@ -536,7 +537,9 @@ pub mod linalg {
     //! Complex linear system solver on $\mathbb{C}^{n \times n}$.
     //!
     //! Uses in-place Crout LU decomposition with implicit scaled partial
-    //! pivoting (Press et al. 1992, *Numerical Recipes*, Ch. 2.3).
+    //! pivoting
+    //! ([Press et al. 1992](https://ui.adsabs.harvard.edu/abs/1992nrfa.book.....P/abstract),
+    //! *Numerical Recipes*, Ch. 2.3).
 
     use anyhow::Result;
     use anyhow::bail;
@@ -1148,7 +1151,7 @@ pub mod special {
     /// *Computation of Special Functions*, Ch. 13).
     ///
     /// Handles exact degenerate and polynomial cases directly (returning
-    /// $10^{300}$ at poles $b \in \{0, -1, -2, \dots\}$), applies Kummer's
+    /// $10^{300}$ at poles $b \in \lbrace 0, -1, -2, \dots \rbrace$), applies Kummer's
     /// transformation $M(a, b, -x) = e^{-x} M(b - a, b, x)$ for $x < 0$,
     /// switches between the ascending power series ($x \le 30 + |b|$ or
     /// $a < 0$) and the large-$x$ asymptotic expansion, and uses upward

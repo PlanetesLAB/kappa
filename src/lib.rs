@@ -39,15 +39,20 @@
 //!   with analytical and numerical geometric cross sections from
 //!   [Tazaki (2021)](https://ui.adsabs.harvard.edu/abs/2021MNRAS.504.2811T/abstract).
 //! - **Continuous Distribution of Ellipsoids (CDE):** Analytical Rayleigh-limit
-//!   shape distribution (Bohren & Huffman 1983, Ch. 12) paired with the exact
-//!   Rayleigh phase matrix.
+//!   shape distribution
+//!   ([Bohren & Huffman 1983](https://ui.adsabs.harvard.edu/abs/1983asls.book.....B/abstract),
+//!   Ch. 12) paired with the exact Rayleigh phase matrix.
 //!
-//! Multi-component core and mantle mixtures are blended with the Bruggeman
+//! Multi-component core and mantle mixtures are blended with the
+//! [Bruggeman (1935)](https://ui.adsabs.harvard.edu/abs/1935AnP...416..636B/abstract)
 //! effective medium rule (including optional vacuum porosity), and mantles are
-//! coated onto cores via the Maxwell Garnett rule. Built-in presets are provided
-//! for the DIANA standard opacity model
+//! coated onto cores via the
+//! [Maxwell Garnett (1904)](https://ui.adsabs.harvard.edu/abs/1904RSPTA.203..385G/abstract)
+//! rule. Built-in presets are provided for the DiscAnalysis (DIANA) standard
+//! opacity model
 //! ([Woitke et al. 2016](https://ui.adsabs.harvard.edu/abs/2016A%26A...586A.103W/abstract))
-//! and the DSHARP opacity model
+//! and the Disk Substructures at High Angular Resolution Project (DSHARP)
+//! opacity model
 //! ([Birnstiel et al. 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...869L..45B/abstract)).
 //!
 //! # Physical Units and Conventions
@@ -57,7 +62,8 @@
 //! - Mass opacities $\kappa_{\mathrm{abs}}, \kappa_{\mathrm{sca}}, \kappa_{\mathrm{ext}}$:
 //!   $\mathrm{cm^{2}\thinspace g^{-1}}$
 //! - Standard scattering matrix elements $F_{ij}(\theta)$: dimensionless
-//!   Hovenier et al. (2004) convention normalized so that
+//!   [Hovenier et al. (2004)](https://ui.adsabs.harvard.edu/abs/2004ASSL..318.....H/abstract)
+//!   convention normalized so that
 //!   $$\frac{1}{2} \int_{0}^{\pi} F_{11}(\theta) \sin\theta \thinspace \mathrm{d}\theta = 1$$
 //!   with consistent sign convention for $F_{34}$ across Mie, DHS, MMF, and CDE.
 //! - RADMC-3D output (`for_radmc = true`): $Z_{ij}(\theta)$ in
@@ -115,8 +121,8 @@
 //!   and ASCII/RADMC-3D writers.
 //! - [`mie`]: Lorenz-Mie solver ([`mie::de_rooij_1984`]).
 //! - [`dhs`]: Concentric core-shell sphere solver ([`dhs::toon_ackerman_1981`]).
-//! - [`fractal`]: RGD, Mean Field, and Modified Mean Field aggregate scattering
-//!   ([`fractal::mean_scattering`]).
+//! - [`fractal`]: Rayleigh-Gans-Debye (RGD), Mean Field, and Modified Mean
+//!   Field aggregate scattering ([`fractal::mean_scattering`]).
 //! - [`geofractal`]: Aggregate geometric cross-section models
 //!   ([`geofractal::get_geometric_cross_section_tazaki`]).
 //! - [`components`]: Built-in optical constant tables and key lookup.
