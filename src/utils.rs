@@ -1,41 +1,87 @@
+//! Mathematical utilities, special functions, linear algebra, and optical-constant
+//! regridding.
+//!
+//! This module groups the numerical building blocks used by the scattering
+//! solvers and opacity pipeline:
+//!
+//! - [`constants`]: High-precision mathematical constants for [`gamma`].
+//! - [`legendre`]: Legendre polynomials $P_{k}(x)$ and associated Legendre
+//!   functions $P_{k}^{m}(x)$ with first derivatives.
+//! - [`bessel`]: Spherical Bessel and Hankel quadrature for the mean-field
+//!   structure integral $S_{p}(k R_{g})$.
+//! - [`linalg`]: Direct complex LU linear solver on $\mathbb{C}^{n \times n}$.
+//! - [`gamma`]: Gamma, incomplete gamma, and digamma functions.
+//! - [`special`]: Two-point correlation cutoffs, Kummer's confluent
+//!   hypergeometric function $M(a, b, x)$, and floating-point comparisons.
+//! - [`regrid_lnk_data`]: Log-log interpolation and extrapolation of tabulated
+//!   optical constants $(n, k)$.
+
 use ndarray::Array1;
 use planetes_ext::types::RVector;
 
 pub mod constants {
-    //! Defines mathematical expressions commonly used when computing distribution
-    //! values as constants
+    //! Mathematical constants used by [`super::gamma`].
     //!
-    //! This module is directly copied from the `statrs` crate.
-    //! The original code is licensed under the MIT license.
-    //! It was purely done to avoid a dependency on the `statrs` crate.
-    //!
-    //! The original code can be found here:
-    //! <https://github.com/statrs-dev/statrs/blob/master/src/constants.rs>
+    //! Adapted from the MIT-licensed `statrs` crate
+    //! (<https://github.com/statrs-dev/statrs/blob/master/src/constants.rs>)
+    //! to avoid pulling in the full dependency.
     #![allow(clippy::excessive_precision)]
 
-    /// Constant value for `ln(pi)`
+    /// Natural logarithm of $\pi$, $\ln \pi$.
     pub const LN_PI: f64 = 1.1447298858494001741434273513530587116472948129153;
 
-    /// Constant value for `ln(2 * sqrt(e / pi))`
+    /// Constant $\ln\!\left(2\sqrt{e / \pi}\right)$ used in the Lanczos
+    /// approximation to $\ln \Gamma(x)$.
     pub const LN_2_SQRT_E_OVER_PI: f64 = 0.6207822376352452223455184457816472122518527279025978;
 
-    /// Constant value for `2 * sqrt(e / pi)`
+    /// Constant $2\sqrt{e / \pi}$ used in the Lanczos approximation to
+    /// $\Gamma(x)$.
     pub const TWO_SQRT_E_OVER_PI: f64 = 1.8603827342052657173362492472666631120594218414085755;
 
-    /// Default accuracy for `f64`, equivalent to `0.0 * F64_PREC`
+    /// Default floating-point comparison tolerance ($1.11 \times 10^{-15}$)
+    /// used in [`super::gamma`].
     pub const DEFAULT_F64_ACC: f64 = 0.0000000000000011102230246251565;
 }
+
 pub mod legendre {
+    //! Legendre polynomials $P_{k}(x)$ and associated Legendre functions
+    //! $P_{k}^{m}(x)$ with first derivatives.
+    //!
+    //! Algorithms follow Zhang & Jin (1996), *Computation of Special
+    //! Functions* (Wiley, Ch. 4), using the Ferrers definition without the
+    //! Condon-Shortley phase factor $(-1)^{m}$.
+
     use anyhow::Result;
     use anyhow::bail;
     use ndarray::Array1;
     use planetes_ext::types::RVector;
 
-    /// Computes the associated Legendre polynomials $P_k^m(x)$ and their derivatives
-    /// for degrees $k = 0, \dots, n$.
+    /// Computes associated Legendre functions $P_{k}^{m}(x)$ and their
+    /// derivatives $\mathrm{d}P_{k}^{m}(x)/\mathrm{d}x$ for degrees
+    /// $k = 0, \dots, n$.
+    ///
+    /// Uses upward recurrence in degree $k$ starting from
+    /// $P_{m}^{m}(x) = (2m - 1)!! \thinspace (1 - x^{2})^{m/2}$ and
+    /// $P_{m+1}^{m}(x) = (2m + 1) x P_{m}^{m}(x)$, with
+    /// $$(k - m) P_{k}^{m}(x) = (2k - 1) x P_{k-1}^{m}(x) - (k + m - 1) P_{k-2}^{m}(x)$$
+    /// and derivative identity
+    /// $$\frac{\mathrm{d} P_{k}^{m}(x)}{\mathrm{d}x} = \frac{k x P_{k}^{m}(x) - (k + m) P_{k-1}^{m}(x)}{x^{2} - 1}.$$
+    ///
+    /// At the endpoints $|x| = 1$, exact closed-form limits are evaluated for
+    /// $m \in \{0, 1, 2\}$; because $\mathrm{d}P_{k}^{1}/\mathrm{d}x$ diverges
+    /// at $|x| = 1$, it is capped at $10^{300}$. Entries with $k < m$ are zero.
+    ///
+    /// # Arguments
+    /// - `m`: Order $m \in \{0, 1, 2\}$ (orders $m > 2$ are rejected at $|x| = 1$).
+    /// - `n`: Maximum degree $n$.
+    /// - `x`: Evaluation point $x \in [-1, 1]$.
+    ///
+    /// # Returns
+    /// Tuple `(pm, pd)` of length $n + 1$ holding $P_{k}^{m}(x)$ and
+    /// $\mathrm{d}P_{k}^{m}(x)/\mathrm{d}x$ for $k = 0, \dots, n$.
     ///
     /// # Errors
-    /// - `m` must be 0, 1, or 2.
+    /// Returns an error if $|x| = 1$ and `m > 2`.
     pub fn lpmns(m: usize, n: usize, x: f64) -> Result<(RVector, RVector)> {
         let mut pm: RVector = Array1::zeros(n + 1);
         let mut pd: RVector = Array1::zeros(n + 1);
@@ -110,8 +156,23 @@ pub mod legendre {
         Ok((pm, pd))
     }
 
-    /// Computes the Legendre polynomials $P_k(x)$ and their derivatives $P_k'(x)$
-    /// for degrees $k = 0, \dots, n$.
+    /// Computes the Legendre polynomials $P_{k}(x)$ and their first
+    /// derivatives $P_{k}^{\prime}(x)$ for degrees $k = 0, \dots, n$.
+    ///
+    /// Uses Bonnet's three-term recurrence
+    /// $$k P_{k}(x) = (2k - 1) x P_{k-1}(x) - (k - 1) P_{k-2}(x)$$
+    /// with $P_{0}(x) = 1$ and $P_{1}(x) = x$. For $|x| < 1$, derivatives are
+    /// evaluated via $P_{k}^{\prime}(x) = k [P_{k-1}(x) - x P_{k}(x)] / (1 - x^{2})$,
+    /// and at $|x| = 1$ via the exact limit
+    /// $P_{k}^{\prime}(\pm 1) = \frac{1}{2} (\pm 1)^{k+1} k (k + 1)$.
+    ///
+    /// # Arguments
+    /// - `n`: Maximum degree $n$.
+    /// - `x`: Evaluation point $x \in [-1, 1]$.
+    ///
+    /// # Returns
+    /// Tuple `(pn, pd)` of length $n + 1$ holding $P_{k}(x)$ and
+    /// $P_{k}^{\prime}(x)$ for $k = 0, \dots, n$.
     #[must_use]
     pub fn lpn(n: usize, x: f64) -> (RVector, RVector) {
         let mut pn: RVector = Array1::zeros(n + 1);
@@ -146,6 +207,13 @@ pub mod legendre {
 }
 
 pub mod bessel {
+    //! Spherical Bessel and Hankel integration for mean-field fractal
+    //! aggregate scattering.
+    //!
+    //! Evaluates the radial structure integral $S_{p}(k R_{g})$ required by
+    //! the Mean Field and Modified Mean Field theories
+    //! ([Tazaki & Tanaka 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract)).
+
     use anyhow::Result;
     use anyhow::bail;
     use num_complex::{Complex, Complex64};
@@ -155,12 +223,30 @@ pub mod bessel {
 
     use super::special::two_point_correlation;
 
+    /// Regime boundary parameterization for evaluating the spherical Bessel
+    /// function of the first kind $j_{p}(x)$.
+    ///
+    /// To maintain double-precision accuracy across orders $p$ and arguments
+    /// $x$, the $(\ln x, p)$ plane is divided by two cubic curves
+    /// $\ln x_{a}(p)$ and $\ln x_{b}(p)$ into three evaluation regimes:
+    /// power-series expansion ($\ln x < \ln x_{a}$), downward recurrence
+    /// ($\ln x_{a} \le \ln x \le \ln x_{b}$), and upward recurrence
+    /// ($\ln x > \ln x_{b}$).
     pub enum BoundaryCondition {
+        /// Boundary polynomials from
+        /// [Jablonski (1994)](https://ui.adsabs.harvard.edu/abs/1994JCoPh.111..256J/abstract)
+        /// (*J. Comput. Phys.* 111, 256).
         Jablonski,
+        /// Refined boundary polynomials from
+        /// [Tazaki & Tanaka (2018)](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract),
+        /// used by default in [`int_sph_bessel`].
         TazakiTanaka,
     }
 
     impl BoundaryCondition {
+        /// Returns the cubic polynomial coefficients `(a, b)` defining
+        /// $\ln x_{a}(p) = a_{0} p^{3} + a_{1} p^{2} + a_{2} p + a_{3}$ and
+        /// $\ln x_{b}(p) = b_{0} p^{3} + b_{1} p^{2} + b_{2} p + b_{3}$.
         fn coefficients(self) -> ([f64; 4], [f64; 4]) {
             match self {
                 BoundaryCondition::Jablonski => {
@@ -187,80 +273,49 @@ pub mod bessel {
         }
     }
 
-    ///  This subroutine performs integration of S_p(kRg) (Equation 31):
-    ///  $$
-    ///         S_p(k R_g) = \frac{\pi^2}{k^3} \int_0^{\infty} du \, u \, J_{p+1/2}(u) \, H_{p+1/2}^{(1)}(u) \, g(u/k)
-    ///  $$
-    ///  where g(u) is the two-point correlation function (Equations 18 and 19):
-    ///  $$
-    ///         g(u) = \frac{1}{4 \pi R_g^3} \left( \frac{u}{R_g} \right)^{d_f - 3} \cdot fc \left( \frac{u}{R_g} \right)
-    ///  $$
-    ///  where fc is the cut-off function. By substituting g(u) into S_p, we have
-    ///  $$
-    ///         S_p(k R_g) = \frac{\pi}{4 X_g^{d_f}} \int_{u_{\min}}^{u_{\max}} du \, u^{d_f - 2} J_{p+1/2}(u) H_{p+1/2}^{(1)}(u) fc(u / X_g)
-    ///  $$
+    /// Numerically integrates the mean-field structure integral $S_{p}(X_{g})$
+    /// of [Tazaki & Tanaka (2018)](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract)
+    /// (their Eq. 31).
     ///
-    ///  where the integration range is approximated by the range `[u_min,u_max]`.
-    ///  By using the spherical Bessel j_p(u) and Hankel functions of 1st kind h_p^(1)(u),
-    ///  the Bessel function and the Hankel function are rewritten by
-    ///  $$
-    ///  J_{p+1/2} (u) = \sqrt{\frac{2u}{\pi}} \, j_p(u)
-    ///  $$
-    ///  
-    ///  $$
-    ///  H_{p+1/2}^{(1)}(u) = \sqrt{\frac{2u}{\pi}} \, h_p^{(1)}(u)
-    ///  $$
-    ///  
-    ///  We have:
-    ///  
-    ///  $$
-    ///  S_p(k R_g) = \frac{1}{2 X_g^{d_f}} \int_{u_{\min}}^{u_{\max}} du \, u^{d_f - 1} j_p(u) h_p^{(1)}(u) fc(u / X_g)
-    ///  $$
-    ///  
-    ///  For the unitary condition of the two-point correlation function:
-    ///  
-    ///  $$
-    ///  1 = \int_0^{\infty} dw \, 4\pi w^2 g(w)
-    ///  $$
-    ///  
-    ///  If we take the integration variable as \( w = u/k \), then we obtain:
-    ///  
-    ///  $$
-    ///  1 = \frac{1}{X_g^{d_f}} \int_{u_{\min}}^{u_{\max}} du \, u^{d_f - 1} fc(u / X_g) \quad \text{.... Eq. (*)}
-    ///  $$
-    ///  
-    ///  The integration range `[umin,umax]` is determined as follows.
-    ///  The integrand of Equation (*) is
+    /// Starting from
+    /// $$S_{p}(k R_{g}) = \frac{\pi^{2}}{k^{3}} \int_{0}^{\infty} u \thinspace J_{p+1/2}(u) \thinspace H_{p+1/2}^{(1)}(u) \thinspace g(u/k) \thinspace \mathrm{d}u$$
+    /// with the two-point monomer correlation function
+    /// $$g(r) = \frac{1}{4 \pi R_{g}^{3}} \left(\frac{r}{R_{g}}\right)^{d_{f} - 3} f_{c}\!\left(\frac{r}{R_{g}}\right)$$
+    /// and the spherical Bessel relations
+    /// $J_{p+1/2}(u) = \sqrt{2u/\pi}\thinspace j_{p}(u)$ and
+    /// $H_{p+1/2}^{(1)}(u) = \sqrt{2u/\pi}\thinspace h_{p}^{(1)}(u)$
+    /// where $h_{p}^{(1)}(u) = j_{p}(u) + i \thinspace y_{p}(u)$ and
+    /// $X_{g} = k R_{g}$, the integral becomes
+    /// $$S_{p}(X_{g}) = \frac{1}{2 X_{g}^{d_{f}}} \int_{u_{\min}}^{u_{\max}} u^{d_{f} - 1} j_{p}(u) h_{p}^{(1)}(u) f_{c}(u / X_{g}) \thinspace \mathrm{d}u.$$
     ///
-    /// ```text
-    ///         (u/xg)^{df-1}fc(u/xg) du = (u/xg) ^{d_f}fc(u/xg) dlnu
-    /// ```
+    /// The truncated bounds $[u_{\min}, u_{\max}]$ are chosen using
+    /// $\eta_{1} = 25$ and $\eta_{2} = 40$ so that
+    /// $f_{c}(u_{\max}/X_{g}) \sim e^{-\eta_{1}}$ and
+    /// $(u_{\min}/X_{g})^{d_{f}} \sim e^{-\eta_{2}}$:
+    /// - [`FractalCutoff::Gaussian`]: $u_{\max} = 2 X_{g} \sqrt{\eta_{1} / d_{f}}$
+    /// - [`FractalCutoff::Exponential`]: $u_{\max} = X_{g} \eta_{1} \sqrt{2 / [d_{f}(d_{f} + 1)]}$
+    /// - [`FractalCutoff::FractalDimension`]: $u_{\max} = X_{g} (2 \eta_{1})^{1/d_{f}}$
+    /// - Lower bound: $u_{\min} = X_{g} \exp(-\eta_{2} / d_{f})$
     ///
-    ///  u_max is chosen so that fc(u/xg) ~ exp[-eta1].
-    ///       For iqcor=1 (Gauss)
-    ///               u_max ~ 2 * xg * sqrt(eta1 / d_f)
-    ///       For iqcor=1 (Exponential)
-    ///               u_max ~ xg * eta1 * sqrt(2.0 /(d_f*(d_f+1))
-    ///       For iqcor=1 (FLDIM)
-    ///               u_max ~ xg * sqrt( 2.0 * eta1 ) ** (1.0/d_f)
-    ///  I adopt eta1 = 25.0.
+    /// The integral is evaluated via streaming trapezoidal quadrature over
+    /// $10^{5}$ logarithmically spaced nodes in $u$, reusing a single
+    /// downward-recurrence workspace buffer and using
+    /// [`BoundaryCondition::TazakiTanaka`]. Components smaller in magnitude
+    /// than $10^{-30}$ are floored to $\pm 10^{-30}$ to prevent underflow in
+    /// downstream ratios. Simultaneously, the unitarity normalization
+    /// $$\frac{1}{X_{g}^{d_{f}}} \int_{u_{\min}}^{u_{\max}} u^{d_{f} - 1} f_{c}(u / X_{g}) \thinspace \mathrm{d}u = 1$$
+    /// is checked to within $10^{-3}$ for non-Tazaki geometries.
     ///
-    ///  u_min is chosen so that (u_min/xg)^{d_f} ~ exp[-eta2], thus,
-    ///
-    /// ```text
-    ///               umin ~ xg * exp(-eta2/d_f)
-    /// ```
-    ///
-    ///  where eta2 = 40.0.
-    ///
-    /// # Remarks
-    /// [`BoundaryCondition::TazakiTanaka`] is used for the boundary condition and is
-    /// recommended; although [`BoundaryCondition::Jablonski`] is also available.
+    /// # Arguments
+    /// - `fracc`: Fractal aggregate configuration providing $d_{f}$, `cutoff`,
+    ///   and `geometry`.
+    /// - `x_g`: Dimensionless gyration size parameter $X_{g} = k R_{g}$.
+    /// - `p`: Multipole order $p$.
     ///
     /// # Errors
-    /// - `Error in sph_bessel (jp)`: An error occurred while computing the spherical Bessel function j_p(u)
-    /// - `Error in sph_bessel (yp)`: An error occurred while computing the spherical Hankel function h_p^(1)(u)
-    /// - `Error in int_sph_bessel`: The unitary condition of the two-point correlation function is not satisfied within the acceptable error margin
+    /// Returns an error if $j_{p}(u)$ or $y_{p}(u)$ becomes non-finite, or if
+    /// the unitarity normalization deviates from $1$ by more than $10^{-3}$
+    /// when `fracc.geometry != FractalGeometry::Tazaki`.
     #[allow(clippy::similar_names)]
     pub fn int_sph_bessel(fracc: &FractalConfig, x_g: f64, p: usize) -> Result<Complex64> {
         let pf = p as f64;
@@ -347,6 +402,24 @@ pub mod bessel {
         Ok(sp)
     }
 
+    /// Evaluates the spherical Bessel functions of the first and second kind,
+    /// $(j_{m}(x), y_{m}(x))$, at order `m` and real argument `x`.
+    ///
+    /// Selects the evaluation algorithm for $j_{m}(x)$ according to `isol`:
+    /// - `1`: ascending power series truncated at $100$ terms (small $x$).
+    /// - `2`: Miller downward recurrence from $m + 100$ down to $0$, normalized
+    ///   against $j_{0}(x) = \sin x / x$, using the caller-provided `k_buf`
+    ///   workspace of length at least $m + 101$ (intermediate $x$).
+    /// - `3`: direct upward recurrence from $j_{0}(x)$ and $j_{1}(x)$ (large $x$).
+    ///
+    /// The second-kind function $y_{m}(x)$ is always computed by stable upward
+    /// recurrence from $y_{0}(x) = -\cos x / x$ and
+    /// $y_{1}(x) = -\cos x / x^{2} - \sin x / x$, saturating to $0$ if an
+    /// intermediate term reaches $10^{70}$ before order $m$ (where
+    /// $j_{m}(x) y_{m}(x)$ vanishes in the integrand).
+    ///
+    /// # Errors
+    /// Returns an error if `isol` is not in `{1, 2, 3}`.
     fn sph_bessel_order(m: usize, x: f64, isol: usize, k_buf: &mut [f64]) -> Result<(f64, f64)> {
         let imax = 100; // truncation order of the series expansion
         let nwarmup = 100; // number of warm-up iterations
@@ -460,13 +533,27 @@ pub mod bessel {
 }
 
 pub mod linalg {
+    //! Complex linear system solver on $\mathbb{C}^{n \times n}$.
+    //!
+    //! Uses in-place Crout LU decomposition with implicit scaled partial
+    //! pivoting (Press et al. 1992, *Numerical Recipes*, Ch. 2.3).
+
     use anyhow::Result;
     use anyhow::bail;
     use num_complex::Complex64;
     use planetes_ext::types::{CMatrix, CVector};
 
-    /// Performs in-place Crout LU decomposition with implicit scaled partial pivoting on a
-    /// square complex matrix `a` of dimension `n x n`.
+    /// Performs in-place Crout LU decomposition with implicit scaled partial
+    /// pivoting on the leading $n \times n$ block of `a`.
+    ///
+    /// On return, `a` stores the unit-diagonal lower factor $L$ below the
+    /// diagonal and the upper factor $U$ on and above the diagonal, and the
+    /// returned vector records the row permutation indices. Zero pivots are
+    /// replaced with $\epsilon = 10^{-20}$ to avoid division by zero.
+    ///
+    /// # Errors
+    /// Returns an error if any row of the leading $n \times n$ block is
+    /// identically zero (singular matrix).
     fn complex_lu_decomposition(a: &mut CMatrix, n: usize) -> Result<Vec<usize>> {
         let eps = Complex64::new(1e-20, 0.0);
         let mut row_scale = vec![0.0; n];
@@ -534,6 +621,11 @@ pub mod linalg {
         Ok(pivot)
     }
 
+    /// Solves $L U x = P b$ in place for `b`, given the Crout LU factor `lu`
+    /// and row permutation `pivot` produced by [`complex_lu_decomposition`].
+    ///
+    /// Exploits leading zeros in the permuted right-hand side during forward
+    /// substitution before performing back-substitution.
     fn complex_lu_solve(lu: &CMatrix, b: &mut CVector, pivot: &[usize], n: usize) {
         let zero = Complex64::new(0.0, 0.0);
         let mut first_nonzero: Option<usize> = None;
@@ -561,11 +653,22 @@ pub mod linalg {
         }
     }
 
-    /// Solves the complex linear system $T r = p$ for $r$ directly on $\mathbb{C}^{n \times n}$
-    /// using LU decomposition with scaled partial pivoting.
+    /// Solves the complex linear system $T r = p$ for $r \in \mathbb{C}^{n}$
+    /// directly on the leading $n \times n$ block of `t` and leading $n$
+    /// entries of `p` via Crout LU decomposition with implicit scaled partial
+    /// pivoting.
+    ///
+    /// Neither `t` nor `p` is modified in place, and the inverse $T^{-1}$ is
+    /// not explicitly formed.
+    ///
+    /// # Arguments
+    /// - `n`: System dimension $n > 0$.
+    /// - `p`: Right-hand side vector of length at least $n$.
+    /// - `t`: Coefficient matrix of shape at least $n \times n$.
     ///
     /// # Errors
-    /// Returns an error if the matrix $T$ is singular or has incompatible dimensions.
+    /// Returns an error if `n == 0`, if `t` or `p` has fewer than `n` elements
+    /// along any axis, or if the leading $n \times n$ block of `t` is singular.
     pub fn complex_matrix_inverse(n: usize, p: &CVector, t: &CMatrix) -> Result<CVector> {
         if n == 0 || t.nrows() < n || t.ncols() < n || p.len() < n {
             bail!("Invalid dimensions in complex_matrix_inverse");
@@ -581,14 +684,11 @@ pub mod linalg {
 }
 
 pub mod gamma {
-    //! Gamma function related utilities
+    //! Gamma, incomplete gamma, and digamma special functions.
     //!
-    //! This module is directly copied from the `statrs` crate.
-    //! The original code is licensed under the MIT license.
-    //! It was purely done to avoid a dependency on the `statrs` crate.
-    //!
-    //! The original code can be found here:
-    //! <https://github.com/statrs-dev/statrs/blob/master/src/function/gamma.rs>
+    //! Adapted from the MIT-licensed `statrs` crate
+    //! (<https://github.com/statrs-dev/statrs/blob/master/src/function/gamma.rs>)
+    //! to avoid pulling in the full dependency.
 
     #![allow(clippy::excessive_precision)]
     use std::f64::consts::{E, EULER_GAMMA, PI};
@@ -600,10 +700,10 @@ pub mod gamma {
     use super::constants::{DEFAULT_F64_ACC, LN_2_SQRT_E_OVER_PI, LN_PI, TWO_SQRT_E_OVER_PI};
     use super::special::almost_eq;
 
-    /// Auxiliary variable when evaluating the `gamma_ln` function
+    /// Lanczos shift parameter $r$ from Pugh (2004, p. 116).
     const GAMMA_R: f64 = 10.900511;
 
-    /// Polynomial coefficients for approximating the `gamma_ln` function
+    /// Lanczos rational series coefficients $d_{k}$ from Pugh (2004, p. 116).
     const GAMMA_DK: &[f64] = &[
         2.48574089138753565546e-5,
         1.05142378581721974210,
@@ -618,11 +718,10 @@ pub mod gamma {
         -2.71994908488607703910e-9,
     ];
 
-    /// Computes the logarithm of the gamma function
-    /// with an accuracy of 16 floating point digits.
-    /// The implementation is derived from
-    /// "An Analysis of the Lanczos Gamma Approximation",
-    /// Glendon Ralph Pugh, 2004 p. 116
+    /// Computes $\ln \Gamma(x)$ to full `f64` precision via the Lanczos
+    /// approximation (Pugh 2004, *An Analysis of the Lanczos Gamma
+    /// Approximation*, p. 116), using Euler's reflection formula for
+    /// $x < 1/2$.
     #[must_use]
     pub fn ln_gamma(x: f64) -> f64 {
         if x < 0.5 {
@@ -648,10 +747,9 @@ pub mod gamma {
         }
     }
 
-    /// Computes the gamma function with an accuracy
-    /// of 16 floating point digits. The implementation
-    /// is derived from "An Analysis of the Lanczos Gamma Approximation",
-    /// Glendon Ralph Pugh, 2004 p. 116
+    /// Computes the gamma function $\Gamma(x)$ to full `f64` precision via the
+    /// Lanczos approximation (Pugh 2004, p. 116), using Euler's reflection
+    /// formula for $x < 1/2$.
     #[must_use]
     pub fn gamma(x: f64) -> f64 {
         if x < 0.5 {
@@ -674,86 +772,65 @@ pub mod gamma {
     }
 
     /// Computes the upper incomplete gamma function
-    /// `Gamma(a,x) = int(exp(-t)t^(a-1), t=0..x) for a > 0, x > 0`
-    /// where `a` is the argument for the gamma function and
-    /// `x` is the lower intergral limit.
+    /// $$\Gamma(a, x) = \int_{x}^{\infty} t^{a - 1} e^{-t} \thinspace \mathrm{d}t$$
+    /// for $a > 0$ and $x > 0$.
     ///
     /// # Panics
-    ///
-    /// if `a` or `x` are not in `(0, +inf)`
+    /// Panics if $a$ or $x$ is not in $(0, +\infty)$.
     #[must_use]
     pub fn gamma_ui(a: f64, x: f64) -> f64 {
         checked_gamma_ui(a, x).unwrap()
     }
 
-    /// Computes the upper incomplete gamma function
-    /// `Gamma(a,x) = int(exp(-t)t^(a-1), t=0..x) for a > 0, x > 0`
-    /// where `a` is the argument for the gamma function and
-    /// `x` is the lower intergral limit.
+    /// Fallible version of [`gamma_ui`], computing
+    /// $\Gamma(a, x) = \Gamma(a)\thinspace Q(a, x)$.
     ///
     /// # Errors
-    ///
-    /// if `a` or `x` are not in `(0, +inf)`
+    /// Returns an error if $a$ or $x$ is not in $(0, +\infty)$.
     pub fn checked_gamma_ui(a: f64, x: f64) -> Result<f64> {
         checked_gamma_ur(a, x).map(|x| x * gamma(a))
     }
 
     /// Computes the lower incomplete gamma function
-    /// `gamma(a,x) = int(exp(-t)t^(a-1), t=0..x) for a > 0, x > 0`
-    /// where `a` is the argument for the gamma function and `x`
-    /// is the upper integral limit.
-    ///
+    /// $$\gamma(a, x) = \int_{0}^{x} t^{a - 1} e^{-t} \thinspace \mathrm{d}t$$
+    /// for $a > 0$ and $x > 0$.
     ///
     /// # Panics
-    ///
-    /// if `a` or `x` are not in `(0, +inf)`
+    /// Panics if $a$ or $x$ is not in $(0, +\infty)$.
     #[must_use]
     pub fn gamma_li(a: f64, x: f64) -> f64 {
         checked_gamma_li(a, x).unwrap()
     }
 
-    /// Computes the lower incomplete gamma function
-    /// `gamma(a,x) = int(exp(-t)t^(a-1), t=0..x) for a > 0, x > 0`
-    /// where `a` is the argument for the gamma function and `x`
-    /// is the upper integral limit.
-    ///
+    /// Fallible version of [`gamma_li`], computing
+    /// $\gamma(a, x) = \Gamma(a)\thinspace P(a, x)$.
     ///
     /// # Errors
-    ///
-    /// if `a` or `x` are not in `(0, +inf)`
+    /// Returns an error if $a$ or $x$ is not in $(0, +\infty)$.
     pub fn checked_gamma_li(a: f64, x: f64) -> Result<f64> {
         checked_gamma_lr(a, x).map(|x| x * gamma(a))
     }
 
-    /// Computes the upper incomplete regularized gamma function
-    /// `Q(a,x) = 1 / Gamma(a) * int(exp(-t)t^(a-1), t=0..x) for a > 0, x > 0`
-    /// where `a` is the argument for the gamma function and
-    /// `x` is the lower integral limit.
+    /// Computes the regularized upper incomplete gamma function
+    /// $$Q(a, x) = \frac{1}{\Gamma(a)} \int_{x}^{\infty} t^{a - 1} e^{-t} \thinspace \mathrm{d}t$$
+    /// for $a > 0$ and $x > 0$.
     ///
-    /// # Remarks
-    ///
-    /// Returns `f64::NAN` if either argument is `f64::NAN`
+    /// Returns `f64::NAN` if either argument is `NaN`.
     ///
     /// # Panics
-    ///
-    /// if `a` or `x` are not in `(0, +inf)`
+    /// Panics if $a$ or $x$ is not in $(0, +\infty)$.
     #[must_use]
     pub fn gamma_ur(a: f64, x: f64) -> f64 {
         checked_gamma_ur(a, x).unwrap()
     }
 
-    /// Computes the upper incomplete regularized gamma function
-    /// `Q(a,x) = 1 / Gamma(a) * int(exp(-t)t^(a-1), t=0..x) for a > 0, x > 0`
-    /// where `a` is the argument for the gamma function and
-    /// `x` is the lower integral limit.
+    /// Fallible version of [`gamma_ur`], evaluating $Q(a, x)$ via continued
+    /// fractions for $x \ge 1$ and $x > a$, and via $1 - P(a, x)$ otherwise.
     ///
-    /// # Remarks
-    ///
-    /// Returns `f64::NAN` if either argument is `f64::NAN`
+    /// Returns `Ok(f64::NAN)` if either argument is `NaN`.
     ///
     /// # Errors
-    ///
-    /// if `a` or `x` are not in `(0, +inf)`
+    /// Returns an error if $a$ or $x$ is not in $(0, +\infty)$.
     pub fn checked_gamma_ur(a: f64, x: f64) -> Result<f64> {
         if a.is_nan() || x.is_nan() {
             return Ok(f64::NAN);
@@ -820,35 +897,27 @@ pub mod gamma {
         Ok(ans * ax)
     }
 
-    /// Computes the lower incomplete regularized gamma function
-    /// `P(a,x) = 1 / Gamma(a) * int(exp(-t)t^(a-1), t=0..x) for real a > 0, x > 0`
-    /// where `a` is the argument for the gamma function and `x` is the upper
-    /// integral limit.
+    /// Computes the regularized lower incomplete gamma function
+    /// $$P(a, x) = \frac{1}{\Gamma(a)} \int_{0}^{x} t^{a - 1} e^{-t} \thinspace \mathrm{d}t$$
+    /// for $a > 0$ and $x > 0$.
     ///
-    /// # Remarks
-    ///
-    /// Returns `f64::NAN` if either argument is `f64::NAN`
+    /// Returns `f64::NAN` if either argument is `NaN`.
     ///
     /// # Panics
-    ///
-    /// if `a` or `x` are not in `(0, +inf)`
+    /// Panics if $a$ or $x$ is not in $(0, +\infty)$.
     #[must_use]
     pub fn gamma_lr(a: f64, x: f64) -> f64 {
         checked_gamma_lr(a, x).unwrap()
     }
 
-    /// Computes the lower incomplete regularized gamma function
-    /// `P(a,x) = 1 / Gamma(a) * int(exp(-t)t^(a-1), t=0..x) for real a > 0, x > 0`
-    /// where `a` is the argument for the gamma function and `x` is the upper
-    /// integral limit.
+    /// Fallible version of [`gamma_lr`], evaluating $P(a, x)$ via power-series
+    /// expansion for $x \le 1$ or $x \le a$, and via $1 - Q(a, x)$ using a
+    /// continued fraction otherwise.
     ///
-    /// # Remarks
-    ///
-    /// Returns `f64::NAN` if either argument is `f64::NAN`
+    /// Returns `Ok(f64::NAN)` if either argument is `NaN`.
     ///
     /// # Errors
-    ///
-    /// if `a` or `x` are not in `(0, +inf)`
+    /// Returns an error if $a$ or $x$ is not in $(0, +\infty)$.
     pub fn checked_gamma_lr(a: f64, x: f64) -> Result<f64> {
         if a.is_nan() || x.is_nan() {
             return Ok(f64::NAN);
@@ -938,10 +1007,11 @@ pub mod gamma {
         Ok(1.0 - ax.exp() * ans)
     }
 
-    /// Computes the Digamma function which is defined as the derivative of
-    /// the log of the gamma function. The implementation is based on
-    /// "Algorithm AS 103", Jose Bernardo, Applied Statistics, Volume 25, Number 3
-    /// 1976, pages 315 - 317
+    /// Computes the digamma function
+    /// $$\psi(x) = \frac{\mathrm{d}}{\mathrm{d}x} \ln \Gamma(x)$$
+    /// using Algorithm AS 103 (Bernardo 1976, *Appl. Stat.* 25, 315) with
+    /// reflection for $x < 0$ and recurrence shifting to $z \ge 12$ before
+    /// applying the asymptotic expansion.
     #[must_use]
     pub fn digamma(x: f64) -> f64 {
         let c = 12.0;
@@ -984,6 +1054,8 @@ pub mod gamma {
         result
     }
 
+    /// Computes the inverse digamma function $\psi^{-1}(x)$ for real $x$ via
+    /// bisection starting from $y_{0} = e^{x}$ down to step size $10^{-15}$.
     #[must_use]
     pub fn inv_digamma(x: f64) -> f64 {
         if x.is_nan() {
@@ -1004,15 +1076,17 @@ pub mod gamma {
         y
     }
 
-    // modified signum that returns 0.0 if x == 0.0. Used
-    // by inv_digamma, may consider extracting into a public
-    // method
+    /// Zero-preserving sign function returning $0$ for $x = 0$ and $\pm 1$
+    /// otherwise, used by [`inv_digamma`].
     fn signum(x: f64) -> f64 {
         if x == 0.0 { 0.0 } else { x.signum() }
     }
 }
 
 pub mod special {
+    //! Special functions for fractal aggregate scattering and floating-point
+    //! comparison helpers.
+
     use std::f64::consts::PI;
 
     use approx::AbsDiffEq;
@@ -1022,15 +1096,11 @@ pub mod special {
 
     use super::gamma::gamma;
 
-    /// Compares if two floats are close via `approx::abs_diff_eq`
-    /// using a maximum absolute difference (epsilon) of `acc`.
+    /// Returns `true` if $|a - b| \le \mathrm{acc}$ (or if both values are the
+    /// same signed infinity).
     ///
-    /// This is directly copied from the `statrs` crate.
-    /// The original code is licensed under the MIT license.
-    /// It was purely done to avoid a dependency on the `statrs` crate.
-    ///
-    /// The original code can be found here:
-    /// <https://github.com/statrs-dev/statrs/blob/master/src/prec.rs>
+    /// Adapted from the MIT-licensed `statrs` crate
+    /// (<https://github.com/statrs-dev/statrs/blob/master/src/prec.rs>).
     #[must_use]
     pub fn almost_eq(a: f64, b: f64, acc: f64) -> bool {
         if a.is_infinite() && b.is_infinite() {
@@ -1039,6 +1109,20 @@ pub mod special {
         a.abs_diff_eq(&b, acc)
     }
 
+    /// Evaluates the dimensionless two-point correlation cutoff function
+    /// $f_{c}(y)$ at $y = u / x$ for a fractal aggregate of dimension $d_{f}$
+    /// ([Tazaki et al. 2016](https://ui.adsabs.harvard.edu/abs/2016ApJ...823...70T/abstract);
+    /// [Tazaki & Tanaka 2018](https://ui.adsabs.harvard.edu/abs/2018ApJ...860...79T/abstract)).
+    ///
+    /// Normalized so that $\int_{0}^{\infty} y^{d_{f} - 1} f_{c}(y) \thinspace \mathrm{d}y = 1$:
+    /// - [`FractalCutoff::Gaussian`]:
+    ///   $f_{c}(y) = \frac{2 c^{d_{f}/2}}{\Gamma(d_{f}/2)} \exp(-c y^{2})$
+    ///   with $c = d_{f} / 4$.
+    /// - [`FractalCutoff::Exponential`]:
+    ///   $f_{c}(y) = \frac{c^{d_{f}}}{\Gamma(d_{f})} \exp(-c y)$
+    ///   with $c = \sqrt{d_{f}(d_{f} + 1) / 2}$.
+    /// - [`FractalCutoff::FractalDimension`]:
+    ///   $f_{c}(y) = \frac{d_{f}}{2} \exp(-y^{d_{f}} / 2)$.
     #[must_use]
     pub fn two_point_correlation(fracc: &FractalConfig, u: f64, x: f64) -> f64 {
         let df = fracc.fractal_dim;
@@ -1058,6 +1142,17 @@ pub mod special {
         }
     }
 
+    /// Evaluates Kummer's confluent hypergeometric function
+    /// $$M(a, b, x) = {}\_{1}F\_{1}(a; b; x) = \sum_{n=0}^{\infty} \frac{(a)\_{n}}{(b)\_{n}} \frac{x^{n}}{n!}$$
+    /// for real parameters `a`, `b`, and argument `x` (Zhang & Jin 1996,
+    /// *Computation of Special Functions*, Ch. 13).
+    ///
+    /// Handles exact degenerate and polynomial cases directly (returning
+    /// $10^{300}$ at poles $b \in \{0, -1, -2, \dots\}$), applies Kummer's
+    /// transformation $M(a, b, -x) = e^{-x} M(b - a, b, x)$ for $x < 0$,
+    /// switches between the ascending power series ($x \le 30 + |b|$ or
+    /// $a < 0$) and the large-$x$ asymptotic expansion, and uses upward
+    /// recurrence in $a$ when $a \ge 2$.
     #[must_use]
     pub fn confluent_hypergeometric(mut a: f64, b: f64, mut x: f64) -> f64 {
         let mut a0 = a;
@@ -1160,11 +1255,35 @@ pub mod special {
         hg
     }
 
+    /// Placeholder for a future geometric-optics limit helper (currently
+    /// unimplemented and unconditionally panics with `todo!()`).
     pub fn optic_limit() {
         todo!()
     }
 }
 
+/// Interpolates and extrapolates tabulated optical constants $(n(\lambda), k(\lambda))$
+/// onto an ascending target wavelength grid `lam`.
+///
+/// Both the tabulated wavelengths `l0` and the target grid `lam` must be in
+/// ascending order (typically in $\mu\mathrm{m}$), with `l0.len() == n0.len() == k0.len() >= 2`.
+///
+/// - **Short wavelengths** ($\lambda \le \lambda_{0}$): constant extrapolation
+///   $n(\lambda) = n_{0}$, $k(\lambda) = k_{0}$.
+/// - **Tabulated interior** ($\lambda_{0} < \lambda \le \lambda_{N-1}$):
+///   piecewise linear interpolation in $(\log_{10}\lambda, \log_{10} n)$ and
+///   $(\log_{10}\lambda, \log_{10} k)$.
+/// - **Long wavelengths** ($\lambda > \lambda_{N-1}$):
+///   - When `loglog` is `true`, extrapolates as a power law using the slope of
+///     the final two tabulated points.
+///   - When `loglog` is `false` (default), applies dielectric long-wavelength
+///     extrapolation: constant $n(\lambda) = n_{\mathrm{base}}$ and
+///     $k(\lambda) = k_{\mathrm{base}} (\lambda_{\mathrm{base}} / \lambda)$,
+///     where the base values come from the last interior grid point (or the
+///     final table entry if all target wavelengths exceed $\lambda_{N-1}$).
+///
+/// # Returns
+/// Tuple `(n, k)` of arrays matching the length of `lam`.
 #[must_use]
 pub fn regrid_lnk_data(
     l0: &[f64],
